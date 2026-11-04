@@ -91,13 +91,48 @@ DEFAULT_CONFIG = {
     "extend": {"context_length": "22", "audio_context_length": 24, "tail_seconds": 3.0},
     # Colab: unload the 9B rewriter right after it answers, so it never sits in RAM next to the H3 models
     "free_after_rewrite": False,
+    # 🤖 短片 Agent: the planner that turns refs + one instruction into a segment contract.
+    # openai = any OpenAI-compatible server (the local MoE on llama.cpp by default);
+    # gemini = Google API, key read from key_file at call time (never copied into config or the browser)
+    "agent": {
+        "provider": "openai",
+        "base_url": "http://127.0.0.1:8080/v1",
+        "model": "qwen36-35b-a3b",
+        "gemini_model": "gemini-3.5-flash-lite",
+        "gemini_key_file": "",
+        "temperature": 0.6,
+        "max_seconds": 60,
+    },
+    # 🖼 圖片 tab: Qwen-Image 2.1 with ComfyUI's own template wiring (TextEncodeQwenImage21 + KSampler, cfg 1)
+    "image": {
+        # qwen = Qwen-Image 2.1 (desktop); ph3 = P-H3-Image, a LoRA on the H3 model (Colab: +10 GB instead of +20 GB)
+        "engine": "qwen",
+        "ph3": {
+            "unet": "Minimax-h3_Singularity_x_10Eros-Max_PRISM_int8.safetensors",
+            "lora": "p-h3-image_lora_bf16.safetensors",
+            "clip": "p-h3-image_text_encoder_int8_convrot.safetensors",
+            "vae": "p-h3-image_vae_int8_convrot.safetensors",
+            "sigmas": "1.0, 0.984753, 0.967905, 0.951688, 0.925372, 0.881923, 0.810083, 0.528718, 0.0",
+            "spec": str(ROOT / "guides" / "p_h3_image_spec.txt"),
+        },
+        "unet": "qwen_image_2.1_int8_convrot.safetensors",
+        "clip": "qwen3vl_8b_int8_convrot.safetensors",
+        "vae": "qwen_image_2.1_vae_bf16.safetensors",
+        "steps": 25,
+        "cfg": 1.0,
+        "spec_t2i": str(ROOT / "guides" / "qwen_image_2.1_t2i_spec.txt"),
+        "spec_edit": str(ROOT / "guides" / "qwen_image_2.1_edit_spec.txt"),
+    },
 }
+# long side of a generated picture, per size button
+IMAGE_SIZES = {"1K": 1024, "1.3K": 1344, "1.6K": 1664, "2K": 2048, "2.7K": 2720}  # P-H3 is best at 2K+
 
 # Node ids in WF.json that the server rewires
 N_COND, N_SAMPLER, N_SCHED, N_SHIFT, N_BRIDGE = "265", "397", "261", "333", "402"
 N_VAE, N_AVAE, N_CLIP, N_LEN, N_SECONDS = "36", "37", "38", "250", "259"
 N_DECODE, N_ADECODE = "253", "254"
 PREVIEW_ONLY = ("401", "329", "364", "51", "252")  # ChunkFeedForward + preview override + VHS + sample inputs
+N_IMG_ENC, N_IMG_SAMPLER, N_IMG_SAVE = "ienc", "isamp", "isave"  # node ids of the 🖼 圖片 graph
 
 SYSTEM_REF = (
     "You enhance prompts for reference-conditioned video and audio generation (Ref2VA). "
@@ -362,7 +397,7 @@ class Monitor(threading.Thread):
                 if node is None:
                     st["done"] = True
             elif kind == "progress":
-                if data.get("node") == N_SAMPLER:
+                if data.get("node") in (N_SAMPLER, N_IMG_SAMPLER):
                     st["max"] = data.get("max", 0)
                     if not st["steps"] or st["steps"][-1][1] != data.get("value"):
                         st["steps"].append((now, data.get("value")))
@@ -561,6 +596,23 @@ def add_output_to_library(cfg, job_id, folder=None):
     job = next((j for j in load_json(JOBS_PATH, []) if j["id"] == job_id), None)
     if not job or job.get("status") != "done":
         raise ValueError("這個工作還沒有完成的影片")
+    if job.get("image"):
+        # 🎬 變成影片 and ＋加入素材庫 on the same picture must not stack up copies in the library
+        known = next((i for i in library_index() if i.get("from_job") == job_id), None)
+        if known:
+            return known
+        tmp = OUTPUTS / f"_lib_{job_id}.png"
+        comfy_download(cfg, job["image"], tmp)
+        body = tmp.read_bytes()
+        tmp.unlink(missing_ok=True)
+        item = add_asset(cfg, job["image"]["filename"], body, folder)
+        with lock:
+            index = library_index()
+            for i in index:
+                if i["id"] == item["id"]:
+                    i["from_job"] = job_id
+            save_json(LIBRARY / "library.json", index)
+        return dict(item, from_job=job_id)
     if job.get("full_video"):
         body, name = (OUTPUTS / job["full_video"]).read_bytes(), job["full_video"]
     else:
@@ -1238,6 +1290,207 @@ def generate(cfg, req):
     return job
 
 
+# ---------------------------------------------------------------- 🖼 picture generation (Qwen-Image 2.1)
+
+def image_dims(aspect, size_key, refs):
+    """Picture size from the long-side button; aspect "auto" follows the first reference (1:1 without one)."""
+    long_side = IMAGE_SIZES.get(size_key, 1344)
+    if aspect == "auto":
+        a, b = (refs[0]["width"], refs[0]["height"]) if refs and refs[0].get("width") else (1, 1)
+    else:
+        a, b = ASPECTS.get(aspect, (1, 1))
+    w, h = (long_side, long_side * b / a) if a >= b else (long_side * a / b, long_side)
+    return round32(w), round32(h)
+
+
+def image_refs(req, text):
+    """Reference pictures for Qwen and the prompt with @圖片N turned into Qwen's own tags.
+
+    Qwen's official edit spec: with two or more inputs the prompt must name them <image1>, <image2> ...;
+    with a single input it must not tag it at all. Without any @ mention every tray picture is used, in order."""
+    index = {i["id"]: i for i in library_index()}
+    tray = [t for t in req.get("tray", []) if index.get(t["id"], {}).get("kind") == "image"]
+    if MENTION_RE.search(text):
+        tagged, chosen = resolve_mentions(text, tray)
+        refs = chosen["image"]
+    else:
+        tagged, refs = text, [index[t["id"]] for t in tray]
+    if len(refs) > 9:
+        raise ValueError("參考圖最多 9 張")
+    if ph3_mode(load_config()):  # P-H3 reads <Picture N> itself, up to 8 pictures (image_1 = the one edited)
+        if len(refs) > 8:
+            raise ValueError("P-H3 編輯最多 8 張圖（第 1 張是要改的那張）")
+        return tagged, refs
+    if len(refs) == 1:
+        word = "图片" if re.search(r"[㐀-鿿]", tagged) else "the image"
+        tagged = re.sub(r"<Picture\s+1>", word, tagged)
+    else:
+        tagged = re.sub(r"<Picture\s+(\d+)>", r"<image\1>", tagged)
+    return tagged, refs
+
+
+def ph3_mode(cfg):
+    return cfg["image"].get("engine", "qwen") == "ph3"
+
+
+def ph3_graph(cfg, prompt, w, h, refs, seed):
+    """PrunaAI's p-h3-image_lora_* workflows: the LoRA bypass-loaded on the H3 model, SigmaShift 1/1, the 8-step
+    grid, BasicGuider, euler. Same node ids as the Qwen graph for the encoder, sampler and saver."""
+    p = cfg["image"]["ph3"]
+    g = {"iu": {"class_type": "UNETLoader", "inputs": {"unet_name": p["unet"], "weight_dtype": "default"}},
+         "ilo": {"class_type": "LoraLoaderBypassModelOnly", "inputs": {"model": ["iu", 0], "lora_name": p["lora"],
+                                                                       "strength_model": 1.0}},
+         "ish": {"class_type": "MiniMaxH3SigmaShift", "inputs": {"model": ["ilo", 0], "shift_video": 1.0, "shift_audio": 1.0}},
+         "il": {"class_type": "CLIPLoader", "inputs": {"clip_name": p["clip"], "type": "minimax", "device": "default"}},
+         "iv": {"class_type": "VAELoader", "inputs": {"vae_name": p["vae"]}},
+         N_IMG_ENC: {"class_type": "PH3ImageConditioning", "inputs": {"clip": ["il", 0], "vae": ["iv", 0], "prompt": prompt,
+                                                                      "width": w, "height": h}},
+         "ig": {"class_type": "BasicGuider", "inputs": {"model": ["ish", 0], "conditioning": [N_IMG_ENC, 0]}},
+         "in": {"class_type": "RandomNoise", "inputs": {"noise_seed": seed}},
+         "is": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "euler"}},
+         "im": {"class_type": "ManualSigmas", "inputs": {"sigmas": p["sigmas"]}},
+         N_IMG_SAMPLER: {"class_type": "SamplerCustomAdvanced", "inputs": {
+             "noise": ["in", 0], "guider": ["ig", 0], "sampler": ["is", 0], "sigmas": ["im", 0],
+             "latent_image": [N_IMG_ENC, 1]}},
+         "id": {"class_type": "VAEDecode", "inputs": {"samples": [N_IMG_SAMPLER, 0], "vae": ["iv", 0]}},
+         N_IMG_SAVE: {"class_type": "SaveImage", "inputs": {"images": ["id", 0], "filename_prefix": "H3Toybox/img"}}}
+    for i, item in enumerate(refs, 1):  # image_1 is the picture edited, the rest are references, in order
+        g[f"ir{i}"] = {"class_type": "LoadImage", "inputs": {"image": item["comfy_name"]}}
+        g[N_IMG_ENC]["inputs"][f"images.image_{i}"] = [f"ir{i}", 0]
+    return g
+
+
+def image_graph(cfg, prompt, w, h, refs, seed):
+    if ph3_mode(cfg):
+        return ph3_graph(cfg, prompt, w, h, refs, seed)
+    im = cfg["image"]
+    g = {"iu": {"class_type": "UNETLoader", "inputs": {"unet_name": im["unet"], "weight_dtype": "default"}},
+         "ic": {"class_type": "QwenImage21Cache", "inputs": {"model": ["iu", 0], "device": "auto", "dtype": "default"}},
+         "il": {"class_type": "CLIPLoader", "inputs": {"clip_name": im["clip"], "type": "qwen_image", "device": "default"}},
+         "iv": {"class_type": "VAELoader", "inputs": {"vae_name": im["vae"]}},
+         N_IMG_ENC: {"class_type": "TextEncodeQwenImage21", "inputs": {"clip": ["il", 0], "prompt": prompt,
+                                                                      "negative_prompt": "", "resolution": 1024,
+                                                                      "vae": ["iv", 0]}},
+         "ie": {"class_type": "EmptyLatentImage", "inputs": {"width": w, "height": h, "batch_size": 1}},
+         N_IMG_SAMPLER: {"class_type": "KSampler", "inputs": {
+             "model": ["ic", 0], "positive": [N_IMG_ENC, 0], "negative": [N_IMG_ENC, 1], "latent_image": ["ie", 0],
+             "seed": seed, "steps": int(im["steps"]), "cfg": float(im["cfg"]), "sampler_name": "euler",
+             "scheduler": "simple", "denoise": 1.0}},
+         "id": {"class_type": "VAEDecode", "inputs": {"samples": [N_IMG_SAMPLER, 0], "vae": ["iv", 0]}},
+         N_IMG_SAVE: {"class_type": "SaveImage", "inputs": {"images": ["id", 0], "filename_prefix": "H3Toybox/img"}}}
+    for i, item in enumerate(refs, 1):  # the encoder's dynamic input: slot N must carry reference N
+        g[f"ir{i}"] = {"class_type": "LoadImage", "inputs": {"image": item["comfy_name"]}}
+        g[N_IMG_ENC]["inputs"][f"images.image_{i}"] = [f"ir{i}", 0]
+    return g
+
+
+def check_image_wiring(entry, refs):
+    """Read back the graph ComfyUI really ran. A LoadImage that exists but is not wired into the encoder's
+    dynamic `images` input passes every other check and silently turns an edit into plain text-to-image."""
+    ran = (entry.get("prompt") or [None, None, {}])[2]
+    enc = ran.get(N_IMG_ENC, {})
+    for i, item in enumerate(refs, 1):
+        link = enc.get("inputs", {}).get(f"images.image_{i}")
+        src = ran.get(link[0], {}) if isinstance(link, list) else {}
+        if src.get("class_type") != "LoadImage" or src.get("inputs", {}).get("image") != item["comfy_name"]:
+            return f"參考圖第 {i} 張沒有接進 {enc.get('class_type', '編碼節點')} 的 images.image_{i}"
+    return None
+
+
+def rewrite_image_prompt(cfg, tagged, refs):
+    """Optional: rewrite with Qwen-Image's official rewriter spec (remote providers only; the local 9B is
+    trained for H3 video prompts, not pictures). The spec answers in JSON; only the prompt goes to Qwen."""
+    rw = cfg["rewriter"]
+    provider = rw.get("provider", "local")
+    if provider not in ("gemini", "openai"):
+        raise ValueError("圖片的提示詞改寫要用 Gemini 或 OpenAI 端點（本地 9B 是影片專用的改寫模型）")
+    spec = Path(cfg["image"]["ph3"]["spec"] if ph3_mode(cfg) else cfg["image"]["spec_edit" if refs else "spec_t2i"]
+                ).read_text(encoding="utf-8")
+    system = spec + "\n\nReturn only the final rewritten prompt, nothing else."
+    parts = [("text", f"User input: {tagged}\nNumber of input images: {len(refs)}")]
+    for i, item in enumerate(refs, 1):
+        with Image.open(media_path(item)) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            im.thumbnail((int(rw["image_side"]),) * 2)  # keep its real shape: the spec reads the ratio off it
+            parts += [("text", f"<Picture {i}>:" if ph3_mode(cfg) else f"<image{i}>:"), ("image", im)]
+    out = (rewrite_gemini(rw["gemini"], rw, system, parts) if provider == "gemini"
+           else rewrite_openai(rw["openai"], rw, system, parts))
+    out = re.sub(r"^```\w*\n|\n```$", "", out.strip())
+    m = re.search(r"\{.*\}", out, flags=re.S)
+    if m:
+        try:
+            data = json.loads(m.group(0))
+            out = str(data.get("rewritten_prompt") or data.get("prompt") or out).strip()
+        except ValueError:
+            pass
+    return out
+
+
+def generate_image(cfg, req):
+    if not req.get("prompt", "").strip():
+        raise ValueError("請先寫一段描述喔")
+    if not cfg["image"].get("installed", True):  # Colab: the picture models are an optional download
+        raise ValueError("這台還沒有安裝生圖模型：回到 Colab 第 ② 格勾選「INSTALL_IMAGE」再執行一次，然後重跑 ③")
+    tagged, refs = image_refs(req, req["prompt"])
+    final_text = req.get("final_prompt") or tagged
+    w, h = image_dims(req.get("aspect", "auto"), req.get("image_size", "1.3K"), refs)
+    seed = req.get("seed")
+    seed = int(seed) if seed not in (None, "", -1) else random.randint(0, 2**48)
+    prompt_id = queue_prompt(cfg, image_graph(cfg, final_text, w, h, refs, seed))
+    job = {"id": prompt_id, "created": time.time(), "status": "queued", "mode": "image",
+           "task": "Edit" if refs else "T2I", "prompt": req["prompt"], "final_prompt": final_text, "seed": seed,
+           "aspect": req.get("aspect", "auto"), "image_size": req.get("image_size", "1.3K"), "width": w, "height": h,
+           "tray": req.get("tray", []), "refs": [r["comfy_name"] for r in refs],
+           "engine": cfg["image"].get("engine", "qwen"),
+           "steps": 8 if ph3_mode(cfg) else int(cfg["image"]["steps"])}
+    with lock:
+        jobs = load_json(JOBS_PATH, [])
+        jobs.insert(0, job)
+        save_json(JOBS_PATH, jobs)
+    return job
+
+
+def saved_image(entry):
+    for f in entry.get("outputs", {}).get(N_IMG_SAVE, {}).get("images", []) or []:
+        if f.get("type", "output") == "output":
+            return f
+    return None
+
+
+def image_estimate(job, st, stats):
+    """(stage, percent, eta): model loading first, then KSampler steps at the measured median pace."""
+    n = int(job.get("steps", 25))
+    step = stats.get("img_step", 1.2)
+    pre = stats.get("img_pre", 20.0)
+    if not st or not st.get("started"):
+        return "queued", 0, pre + n * step
+    elapsed = time.time() - st["started"]
+    steps = st["steps"]
+    if not steps:
+        return "prepare", max(1, min(30, int(100 * elapsed / (elapsed + pre + n * step)))), max(3.0, pre - elapsed) + n * step
+    durs = [steps[i][0] - steps[i - 1][0] for i in range(1, len(steps))]
+    if durs:
+        step = sorted(durs)[len(durs) // 2]
+    v = steps[-1][1]
+    if v >= n:
+        return "decode", 97, 3
+    remain = (n - v) * step + 3
+    return "draw", max(1, min(99, int(100 * elapsed / (elapsed + remain)))), remain
+
+
+def learn_image(st):
+    steps = (st or {}).get("steps") or []
+    if not st or not st.get("started") or len(steps) < 3:
+        return
+    durs = [steps[i][0] - steps[i - 1][0] for i in range(1, len(steps))]
+    sample = {"img_pre": max(0.0, steps[0][0] - st["started"]), "img_step": sorted(durs)[len(durs) // 2]}
+    with lock:
+        stats = load_json(STATS_PATH, DEFAULT_STATS)
+        for k, v in sample.items():
+            stats[k] = round(stats[k] * 0.6 + v * 0.4, 3) if k in stats else round(v, 3)
+        save_json(STATS_PATH, stats)
+
+
 def saved_video(entry):
     """The video our SaveVideo node wrote.
 
@@ -1272,6 +1525,13 @@ def finish_extend(cfg, job):
 
 
 def refresh_jobs(cfg):
+    # the browser poll and the 🤖 Agent worker both refresh; serialized so a finished extension
+    # is never handed to two join workers
+    with REFRESH_LOCK:
+        return _refresh_jobs(cfg)
+
+
+def _refresh_jobs(cfg):
     with lock:
         jobs = load_json(JOBS_PATH, [])
     pending = [j for j in jobs if j["status"] in ("queued", "running", "joining")]
@@ -1285,6 +1545,16 @@ def refresh_jobs(cfg):
             if job["status"] == "joining":
                 continue
             entry = history_entry(cfg, job["id"])
+            if entry and job.get("mode") == "image":
+                learn_image(MONITOR.snapshot(job["id"]))
+                if entry["status"].get("status_str") == "error":
+                    job.update(status="error", error=execution_error(entry))
+                    continue
+                miswired = check_image_wiring(entry, [{"comfy_name": n} for n in job.get("refs", [])])
+                job.update(image=saved_image(entry), finished=time.time(), status="done")
+                if miswired:
+                    job.update(status="error", error=miswired)
+                continue
             if entry:
                 st = MONITOR.snapshot(job["id"])
                 if st:
@@ -1308,7 +1578,8 @@ def refresh_jobs(cfg):
     stats = load_json(STATS_PATH, DEFAULT_STATS)
     for job in jobs:
         if job["status"] in ("queued", "running"):
-            stage, percent, eta = estimate(job, MONITOR.snapshot(job["id"]), stats)
+            est = image_estimate if job.get("mode") == "image" else estimate
+            stage, percent, eta = est(job, MONITOR.snapshot(job["id"]), stats)
             job["progress"] = {"stage": stage, "percent": percent, "eta": round(eta) if eta is not None else None,
                                "live": MONITOR.connected}
         elif job["status"] == "joining":
@@ -1327,6 +1598,308 @@ def join_worker(cfg, job):
             if j["id"] == job["id"]:
                 j.update(update)
         save_json(JOBS_PATH, jobs)
+
+
+# ---------------------------------------------------------------- 🤖 短片 Agent
+# The T8 pattern for small models: ONE compact structured call writes the whole short as a contract,
+# everything mechanical (durations, reference labels, line budget, chaining) is checked and derived locally,
+# and only a failed check goes back to the model, once, with the exact problems listed.
+# Each segment then runs through the ordinary 🧸 參考 path (9B rewriter → Ref2VA) and is chained onto the
+# previous one with H3 Motion Context, so the last segment's full video is the whole short.
+
+AGENT_PATH = DATA / "agent_runs.json"
+AGENT_CPS = 4.0  # spoken characters per second a segment can carry
+AGENT_SYSTEM = """你是短片導演。使用者給你幾張參考圖（標籤：{labels}）和一句指示，你要規劃一支 {total} 秒的短片，
+分成 {n} 段；每段是一次影片生成（4 到 15 秒），段與段會直接接在一起播放。
+
+只輸出一個 JSON 物件，不要任何說明：
+{{"title": "片名",
+  "logline": "一句話說完整個故事",
+  "bible": {{"characters": [{{"ref": "圖片1", "name": "名字", "look": "外觀與服裝，一句"}}],
+            "location": "主要場景、時間與光線，一句",
+            "style": "影像風格，一句"}},
+  "segments": [{{"seconds": 10,
+                "refs": ["圖片1"],
+                "action": "這一段畫面裡實際發生的事：誰在畫面哪一側、做了什麼具體動作、鏡頭怎麼帶",
+                "dialogue": [{{"who": "名字", "line": "台詞"}}],
+                "sound": "環境聲與音效",
+                "end_state": "這一段最後一刻的畫面：每個人在哪、什麼姿勢、手上拿著什麼"}}]}}
+
+規則：
+- 一段只做一件事；第 k 段從第 k-1 段的 end_state 開始，因果要接得上，最後一段要有收尾。
+- 每段的台詞總字數不超過「秒數×4」；可以沒有台詞（dialogue 給空陣列）。
+- refs 只能用上面列出的標籤；角色出現在哪一段，那一段的 refs 就要有他的圖。
+- 所有段的 seconds 加起來必須等於 {total}。
+- 寫看得見、拍得出來的東西，不寫心理活動。"""
+AGENT_REVISE = """下面是目前這支短片的規劃 JSON。使用者想修改：{message}
+
+只改使用者要求的部分，其他段落一字不動；輸出修改後的完整 JSON（同樣格式、同樣的總秒數 {total}）。
+
+目前的規劃：
+{plan}"""
+AGENT_LOCK = threading.Lock()
+REFRESH_LOCK = threading.Lock()
+AGENT_CANCEL = set()
+
+
+def agent_runs():
+    return load_json(AGENT_PATH, [])
+
+
+def agent_update(run_id, **fields):
+    with AGENT_LOCK:
+        runs = agent_runs()
+        for r in runs:
+            if r["id"] == run_id:
+                r.update(fields)
+                run = dict(r)
+        save_json(AGENT_PATH, runs)
+    return run
+
+
+def agent_log(run_id, text):
+    with AGENT_LOCK:
+        runs = agent_runs()
+        for r in runs:
+            if r["id"] == run_id:
+                r.setdefault("log", []).append([round(time.time()), text])
+        save_json(AGENT_PATH, runs)
+
+
+def agent_chat(cfg, system, parts):
+    """The planner: OpenAI-compatible (local MoE) or Gemini (key read from a file at call time)."""
+    ag = cfg["agent"]
+    knobs = {"temperature": float(ag["temperature"]), "top_p": 0.9, "max_length": 4096}
+    if ag.get("provider") == "gemini":
+        key_file = Path(ag.get("gemini_key_file") or "")
+        key = key_file.read_text(encoding="utf-8").strip() if key_file.is_file() else cfg["rewriter"]["gemini"].get("api_key", "")
+        return rewrite_gemini({"api_key": key, "model": ag.get("gemini_model")}, knobs, system, parts, max_tokens=8192)
+    return rewrite_openai({"base_url": ag["base_url"], "api_key": "", "model": ag.get("model")}, knobs, system, parts,
+                          max_tokens=4096)
+
+
+def parse_contract(text):
+    text = re.sub(r"^```\w*\n|\n```$", "", (text or "").strip())
+    m = re.search(r"\{.*\}", text, flags=re.S)
+    if not m:
+        return None
+    try:
+        return json.loads(m.group(0))
+    except ValueError:
+        try:  # the most common small-model slip: a trailing comma before } or ]
+            return json.loads(re.sub(r",\s*([}\]])", r"\1", m.group(0)))
+        except ValueError:
+            return None
+
+
+def spoken(seg):
+    return "".join(str(d.get("line", "")) for d in seg.get("dialogue") or [] if isinstance(d, dict))
+
+
+def check_contract(plan, labels, total):
+    """Local contract checks. Mechanical slips (durations) are fixed here; content problems are returned
+    as a list for one correction round, the way T8's quality layer sends a prompt back."""
+    errors, fixes = [], []
+    segs = plan.get("segments") if isinstance(plan, dict) else None
+    if not isinstance(segs, list) or not segs:
+        return plan, ["沒有 segments 陣列"], fixes
+    for k, seg in enumerate(segs, 1):
+        if not isinstance(seg, dict):
+            errors.append(f"第 {k} 段不是物件")
+            continue
+        try:
+            sec = float(seg.get("seconds", 0))
+        except (TypeError, ValueError):
+            sec = 0
+        if not 4 <= sec <= 15:
+            fixes.append(f"第 {k} 段 {sec:g} 秒 → 夾到 4–15")
+            sec = min(15.0, max(4.0, sec or 8.0))
+        seg["seconds"] = sec
+        bad = [r for r in seg.get("refs") or [] if r not in labels]
+        if bad:
+            errors.append(f"第 {k} 段的 refs 用了不存在的標籤 {bad}（只能用 {labels}）")
+        seg["refs"] = [r for r in seg.get("refs") or [] if r in labels]
+        if len(str(seg.get("action", ""))) < 15:
+            errors.append(f"第 {k} 段的 action 太短，要寫出看得見的具體動作與鏡頭")
+        if not str(seg.get("end_state", "")).strip():
+            errors.append(f"第 {k} 段缺 end_state（下一段要從這裡接）")
+        n_chars = len(re.sub(r"[\s，。！？、,.!?…「」\"']", "", spoken(seg)))
+        if n_chars > sec * AGENT_CPS * 1.25:
+            errors.append(f"第 {k} 段台詞 {n_chars} 字，{sec:g} 秒最多約 {int(sec * AGENT_CPS)} 字：刪短或拆段")
+    secs = [s["seconds"] for s in segs if isinstance(s, dict)]
+    if secs and abs(sum(secs) - total) > 0.5:  # rescale, then let the last segment absorb rounding
+        scale = total / sum(secs)
+        for s in segs[:-1]:
+            s["seconds"] = float(min(15, max(4, round(s["seconds"] * scale))))
+        segs[-1]["seconds"] = float(min(15, max(4, total - sum(s["seconds"] for s in segs[:-1]))))
+        fixes.append(f"總秒數 {sum(secs):g} → 依比例調成 {sum(s['seconds'] for s in segs):g}")
+    return plan, errors, fixes
+
+
+def agent_plan(cfg, run, revise=None):
+    """One planning call (+ at most one correction call). Returns the checked plan."""
+    labels = [f"圖片{i}" for i in range(1, len(run["images"]) + 1)]
+    total = int(run["total"])
+    n = max(1, -(-total // 15))  # ceil(total / 15): fewest segments that fit, each ≤ 15 s
+    system = AGENT_SYSTEM.format(labels="、".join(labels) or "（沒有參考圖）", total=total, n=n)
+    parts = []
+    for label, aid in zip(labels, run["images"]):
+        with Image.open(media_path(asset(aid))) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            im.thumbnail((512, 512))
+            parts += [("text", f"{label}："), ("image", im)]
+    if revise:
+        parts.append(("text", AGENT_REVISE.format(message=revise, total=total,
+                                                  plan=json.dumps(run["plan"], ensure_ascii=False, indent=1))))
+    else:
+        parts.append(("text", f"指示：{run['instruction']}"))
+    t0 = time.time()
+    raw = agent_chat(cfg, system, parts)
+    plan = parse_contract(raw)
+    errors = ["輸出不是合法的 JSON"] if plan is None else check_contract(plan, labels, total)[1]
+    rounds = 1
+    if errors:  # one correction round with the exact problems, like T8's correction_messages
+        agent_log(run["id"], "契約檢查沒過，送回修正：" + "；".join(errors))
+        fix = parts + [("text", "你上一版的輸出：\n" + raw[:6000] + "\n\n有這些問題，只修正它們，輸出完整 JSON：\n- "
+                        + "\n- ".join(errors))]
+        raw2 = agent_chat(cfg, system, fix)
+        plan2 = parse_contract(raw2)
+        rounds = 2
+        if plan2 is not None:
+            plan, raw = plan2, raw2
+    if plan is None:
+        raise RuntimeError("規劃模型沒有給出合法的 JSON：" + raw[:300])
+    plan, errors, fixes = check_contract(plan, labels, total)
+    return plan, {"seconds": round(time.time() - t0, 1), "rounds": rounds, "errors": errors, "fixes": fixes}
+
+
+def segment_prompt(plan, k):
+    """A 🧸 參考 prompt for segment k: bible facts the segment needs, then what happens, all in plain Chinese
+    with @圖片N tags. The 9B rewriter turns it into the official Ref2VA prompt."""
+    seg, bible = plan["segments"][k], plan.get("bible") or {}
+    refs = seg.get("refs") or []
+    lines = [x for x in (bible.get("style"), bible.get("location")) if x]
+    used = set()
+    for c in bible.get("characters") or []:
+        if isinstance(c, dict) and c.get("ref") in refs:
+            lines.append(f"{c.get('name', '')}（@{c['ref']}）：{c.get('look', '')}")
+            used.add(c["ref"])
+    for r in refs:
+        if r not in used:
+            lines.append(f"參考 @{r}")
+    if k > 0:
+        lines.append("緊接上一段的最後一刻：" + str(plan["segments"][k - 1].get("end_state", "")))
+    lines.append(str(seg.get("action", "")))
+    for d in seg.get("dialogue") or []:
+        if isinstance(d, dict) and d.get("line"):
+            lines.append(f"{d.get('who', '')}說：「{d['line']}」")
+    if seg.get("sound"):
+        lines.append("聲音：" + str(seg["sound"]))
+    lines.append("這一段結束在：" + str(seg.get("end_state", "")))
+    return "\n".join(lines)
+
+
+def wait_job(cfg, job_id, run_id):
+    while True:
+        if run_id in AGENT_CANCEL:
+            raise RuntimeError("已停止")
+        job = next((j for j in refresh_jobs(cfg) if j["id"] == job_id), None)
+        if job is None:
+            raise RuntimeError("工作不見了（被移除了？）")
+        if job["status"] == "error":
+            raise RuntimeError(job.get("error") or "生成失敗")
+        if job["status"] == "done":
+            return job
+        time.sleep(4)
+
+
+def agent_worker(cfg, run_id, start=0, revise=None):
+    try:
+        run = next(r for r in agent_runs() if r["id"] == run_id)
+        cfg = copy.deepcopy(cfg)
+        cfg["agent"]["provider"] = run.get("planner") or cfg["agent"]["provider"]
+        if revise is not None or not run.get("plan"):
+            agent_update(run_id, status="planning")
+            plan, meta = agent_plan(cfg, run, revise)
+            if revise is not None:  # first segment whose contract changed; everything after it re-chains
+                old = run.get("plan") or {}
+                same_bible = old.get("bible") == plan.get("bible")
+                start = 0
+                if same_bible:
+                    olds = old.get("segments") or []
+                    while start < min(len(olds), len(plan["segments"])) and olds[start] == plan["segments"][start]:
+                        start += 1
+                agent_log(run_id, f"修改：{revise} → 從第 {start + 1} 段開始重做")
+            segs = (run.get("segments") or [])[:start] + [{"status": "waiting"} for _ in plan["segments"][start:]]
+            run = agent_update(run_id, plan=plan, plan_meta=meta, segments=segs, status="generating", final=None)
+            agent_log(run_id, f"規劃完成（{meta['seconds']} 秒，{meta['rounds']} 輪）" +
+                      (f"；仍有提醒：{'；'.join(meta['errors'])}" if meta["errors"] else ""))
+        plan = run["plan"]
+        prev_asset = run["segments"][start - 1].get("asset") if start > 0 else None
+        for k in range(start, len(plan["segments"])):
+            seg = plan["segments"][k]
+            tray = [{"id": aid, "use_audio": True, "extend": False} for aid in run["images"]]
+            if prev_asset and run.get("chain", True):
+                tray.append({"id": prev_asset, "use_audio": True, "extend": True})
+            req = {"mode": "ref", "prompt": segment_prompt(plan, k), "tray": tray, "seconds": seg["seconds"],
+                   "aspect": run["aspect"], "resolution": run["resolution"], "intensity": run.get("intensity", "off"),
+                   "skill": run.get("skill", ""), "fast": True, "seed": None}
+            segs = agent_runs_get(run_id)["segments"]
+            segs[k] = {"status": "rewriting", "prompt": req["prompt"]}
+            agent_update(run_id, segments=segs)
+            req["final_prompt"] = rewrite(cfg, req)["prompt"]
+            job = generate(cfg, req)
+            segs[k].update(status="generating", job=job["id"])
+            agent_update(run_id, segments=segs)
+            job = wait_job(cfg, job["id"], run_id)
+            item = add_output_to_library(cfg, job["id"], run.get("folder"))
+            prev_asset = item["id"]
+            segs[k].update(status="done", asset=item["id"], video=job.get("full_video") or None)
+            agent_update(run_id, segments=segs)
+        last = agent_runs_get(run_id)["segments"][-1]
+        final_job = next((j for j in load_json(JOBS_PATH, []) if j["id"] == last.get("job")), {})
+        agent_update(run_id, status="done", final={"full_video": final_job.get("full_video"), "video": final_job.get("video")})
+        agent_log(run_id, "完成 🎬")
+    except Exception as e:
+        agent_update(run_id, status="error", error=f"{type(e).__name__}: {e}")
+    finally:
+        AGENT_CANCEL.discard(run_id)
+
+
+def agent_runs_get(run_id):
+    return next(r for r in agent_runs() if r["id"] == run_id)
+
+
+def agent_start(cfg, b):
+    images = [i for i in b.get("images", []) if asset(i)["kind"] == "image"]
+    if not b.get("instruction", "").strip():
+        raise ValueError("請寫一句你想要的短片")
+    total = int(b.get("total", 30))
+    if not 8 <= total <= int(cfg["agent"]["max_seconds"]):
+        raise ValueError(f"短片長度要在 8 到 {cfg['agent']['max_seconds']} 秒之間")
+    run_id = uuid.uuid4().hex[:10]
+    folder = folder_action({"action": "create", "name": "🤖 " + b["instruction"][:12]})[-1]["id"]
+    run = {"id": run_id, "created": time.time(), "status": "queued", "instruction": b["instruction"], "images": images,
+           "total": total, "aspect": b.get("aspect", "9:16") if b.get("aspect") != "auto" else "9:16",
+           "resolution": b.get("resolution", "720P"), "intensity": b.get("intensity", "off"), "skill": b.get("skill", ""),
+           "chain": bool(b.get("chain", True)), "folder": folder,
+           "planner": b.get("planner") if b.get("planner") in ("openai", "gemini") else cfg["agent"]["provider"], "log": []}
+    with AGENT_LOCK:
+        runs = agent_runs()
+        runs.insert(0, run)
+        save_json(AGENT_PATH, runs)
+    threading.Thread(target=agent_worker, args=(cfg, run_id), daemon=True).start()
+    return run
+
+
+def agent_revise(cfg, b):
+    run = agent_runs_get(b["id"])
+    if run["status"] in ("planning", "generating"):
+        raise ValueError("這支短片還在做，等它好了再改（或先停止）")
+    if not run.get("plan"):
+        raise ValueError("還沒有規劃可以改")
+    threading.Thread(target=agent_worker, args=(cfg, run["id"]), kwargs={"revise": b["message"]}, daemon=True).start()
+    return agent_update(run["id"], status="planning")
 
 
 # ---------------------------------------------------------------- HTTP
@@ -1375,12 +1948,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(library_index())
             if url.path == "/api/jobs":
                 return self.send_json(refresh_jobs(cfg))
+            if url.path == "/api/agent/runs":
+                return self.send_json(agent_runs())
             if url.path == "/api/config":
                 wf = json.loads(TEMPLATE_PATH.read_text(encoding="utf-8"))
                 loras = [{"id": k, "name": v["inputs"]["lora_name"], "strength": v["inputs"]["strength_model"]}
                          for k, v in wf.items() if v["class_type"] == "LoraLoaderModelOnly"]
                 stats = load_json(STATS_PATH, DEFAULT_STATS)
-                return self.send_json({"config": public_config(cfg), "skills": load_skills(cfg), "aspects": list(ASPECTS),
+                return self.send_json({"config": public_config(cfg), "skills": load_skills(cfg), "aspects": list(ASPECTS), "image_sizes": list(IMAGE_SIZES),
                                        "lora_nodes": loras, "rewrite_seconds": stats["rewrite"]})
             if url.path == "/api/models":
                 info = comfy(cfg, "/object_info/CLIPLoader")
@@ -1423,9 +1998,23 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == "/api/rewriter/test":
                 return self.send_json(test_rewriter(cfg, self.body_json()))
             if url.path == "/api/rewrite":
-                return self.send_json(rewrite(cfg, self.body_json()))
+                b = self.body_json()
+                if b.get("mode") == "image":
+                    t0 = time.time()
+                    tagged, refs = image_refs(b, b.get("prompt", ""))
+                    return self.send_json({"prompt": rewrite_image_prompt(cfg, tagged, refs), "task": "Edit" if refs else "T2I",
+                                           "seconds_used": round(time.time() - t0, 1)})
+                return self.send_json(rewrite(cfg, b))
             if url.path == "/api/generate":
-                return self.send_json(generate(cfg, self.body_json()))
+                b = self.body_json()
+                return self.send_json(generate_image(cfg, b) if b.get("mode") == "image" else generate(cfg, b))
+            if url.path == "/api/agent/start":
+                return self.send_json(agent_start(cfg, self.body_json()))
+            if url.path == "/api/agent/revise":
+                return self.send_json(agent_revise(cfg, self.body_json()))
+            if url.path == "/api/agent/stop":
+                AGENT_CANCEL.add(self.body_json()["id"])
+                return self.send_json({"ok": True})
             if url.path == "/api/jobs/delete":
                 job_id = self.body_json()["id"]
                 with lock:

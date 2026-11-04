@@ -1,6 +1,8 @@
 library/
 outputs/
-guides/
+# the official H3 guides are downloaded at runtime (no upstream license to redistribute)
+guides/VIDEO_PROMPT_WRITING_GUIDE_*
+agent_runs.json
 jobs.json
 stats.json
 config.json

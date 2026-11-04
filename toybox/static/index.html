@@ -4,13 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>H3 Toybox</title>
-<link rel="icon" href="/static/img/mascot.png">
-<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="static/img/mascot.png">
+<link rel="stylesheet" href="static/style.css">
 </head>
 <body>
 <header class="topbar">
   <div class="brand">
-    <img class="brand-mascot" src="/static/img/mascot.png" alt="">
+    <img class="brand-mascot" src="static/img/mascot.png" alt="">
     <h1 class="rainbow"><span>H</span><span>3</span> <span>T</span><span>o</span><span>y</span><span>b</span><span>o</span><span>x</span></h1>
     <small>把想像丟進玩具箱，搖一搖就變成影片</small>
   </div>
@@ -43,6 +43,13 @@
 
   <!-- 創作區 -->
   <section class="panel compose">
+    <div class="toptabs" id="topTabs">
+      <button data-top="image" class="top">🖼 圖片</button>
+      <button data-top="video" class="top active">🎬 影片</button>
+      <button data-top="agent" class="top" title="參考圖＋一句話，自動規劃成一支 60 秒內的短片">🤖 短片 Agent</button>
+      <button data-top="projects" class="top proj-tab" hidden title="劇集專案：影片劇・廣播劇・AVG">📁 專案</button>
+    </div>
+
     <div class="modes" id="modeTabs">
       <button data-mode="ref" class="mode pink active"><b>🧸 參考生成</b><small>圖片・影片・聲音當參考</small></button>
       <button data-mode="frames" class="mode blue"><b>🎞 頭尾格</b><small>指定第一格、最後一格</small></button>
@@ -50,7 +57,7 @@
     </div>
 
     <div id="refArea">
-      <div class="area-head"><span>參考素材</span><span class="hint">在素材庫按「＋參考」加入，再用 <b>@</b> 標記；影片可以切成「延伸」</span></div>
+      <div class="area-head"><span>參考素材</span><span class="hint" id="refHint">在素材庫按「＋參考」加入，再用 <b>@</b> 標記；影片可以切成「延伸」</span></div>
       <div id="tray" class="tray"></div>
     </div>
 
@@ -74,37 +81,62 @@
         <label>畫面比例</label>
         <div class="seg" id="aspectSeg"></div>
       </div>
-      <div class="opt">
+      <div class="opt" data-only="image">
+        <label>圖片尺寸（長邊）</label>
+        <div class="seg" id="imgSizeSeg"></div>
+      </div>
+      <div class="opt" data-only="agent">
+        <label>短片長度 <b id="agentSecondsVal">30</b> 秒</label>
+        <input id="agentSeconds" type="range" min="10" max="60" step="5" value="30">
+      </div>
+      <div class="opt" data-only="agent">
+        <label>規劃模型</label>
+        <select id="agentPlanner"><option value="openai">🧠 本地 MoE（OpenAI 相容端點）</option><option value="gemini">💎 Gemini</option></select>
+      </div>
+      <div class="opt" data-only="video agent">
         <label>解析度</label>
         <div class="seg" id="resSeg">
           <button data-v="480P">480P</button><button data-v="720P" class="active">720P</button><button data-v="1080P">1080P</button>
         </div>
       </div>
-      <div class="opt">
+      <div class="opt" data-only="video">
         <label>秒數 <b id="secondsVal">10</b> 秒 <span id="extendNote" class="hint" hidden>（前 0.9 秒是接縫，會被剪掉）</span></label>
         <input id="seconds" type="range" min="3" max="15" step="1" value="10">
       </div>
-      <div class="opt">
+      <div class="opt" data-only="video agent">
         <label>動作強度 <span class="tip" title="關：只套用文戲 LoRA；開啟：套用全部 LoRA，動作 LoRA 強度依等級縮放">?</span></label>
         <div class="seg" id="intensitySeg">
           <button data-v="off" class="active">關（文戲）</button><button data-v="low">低</button><button data-v="mid">中</button><button data-v="high">高</button>
         </div>
       </div>
-      <div class="opt">
+      <div class="opt" data-only="video">
         <label>導演 Skill</label>
         <select id="skill"><option value="">不使用</option></select>
       </div>
-      <div class="opt">
+      <div class="opt" data-only="video">
         <label>速度</label>
         <label class="switch"><input id="fastMode" type="checkbox" checked><span></span> ⚡ 快速模式 <small class="hint" id="fastHint">8 步</small></label>
       </div>
-      <div class="opt">
+      <div class="opt" data-only="video image">
         <label>Seed（空白＝隨機）</label>
         <input id="seed" type="number" placeholder="隨機">
       </div>
     </div>
 
-    <div class="rewrite-row">
+    <div id="projPane" hidden>
+      <div class="proj-grid" id="projGrid"></div>
+    </div>
+    <div class="rewrite-row" id="projRow" hidden>
+      <span class="hint">上面寫一句想法（或貼大綱）就能開新作品；點方塊繼續做已有的作品</span>
+      <div class="actions"><button id="btnNewProject" class="pill big pink">🎬 開一部新作品</button></div>
+    </div>
+    <div class="rewrite-row" id="agentRow" hidden>
+      <span class="hint">一次規劃整支短片 → 逐段生成並自動接起來；做好之後可以在下面用一句話修改</span>
+      <div class="actions"><button id="btnAgent" class="pill big blue">🤖 開始做短片</button></div>
+    </div>
+    <div id="agentPanel" class="agent-panel" hidden></div>
+
+    <div class="rewrite-row" id="rewriteRow">
       <label class="switch"><input id="useRewrite" type="checkbox" checked><span></span> ✨ 提示詞改寫</label>
       <div class="actions">
         <button id="btnRewrite" class="pill">改寫預覽</button>
@@ -192,6 +224,6 @@
 </dialog>
 
 <div id="toast" class="toast" hidden></div>
-<script src="/static/app.js"></script>
+<script src="static/app.js"></script>
 </body>
 </html>

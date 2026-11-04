@@ -9,12 +9,22 @@ const PLACEHOLDER = {
   ref: "描述你想要的影片，輸入 @ 選擇參考素材。\n例：@圖片1 的少女在月夜花田舉起大鐮刀，轉身輕聲說：「今晚的月色，很適合收割。」\n要接續一支影片：把它加進參考、切成「延伸」，再寫接下來發生什麼。",
   frames: "描述從首格走到尾格之間發生什麼（只放一張也可以）。\n例：她放下手上的書，起身走到窗邊拉開窗簾，陽光灑進整個房間。",
   text: "用文字描述整支影片：畫面、動作、對白、聲音。\n例：深夜的便利商店，店員一邊打哈欠一邊補貨，門鈴突然響起，一隻淋濕的橘貓走了進來。",
+  agent: "一句話說你想要的短片，參考圖會自動分配到每一段。\n例：@圖片1 的少女在月下花田遇見一隻迷路的小狐狸，最後抱著牠一起回家。\n做好之後，可以在下面用一句話修改（例：第二段改成下雨），只會重做受影響的段落。",
+  projects: "寫一句想法、貼上一份大綱，按「🎬 開一部新作品」；或點下面的方塊繼續做已有的作品。\n例：外送員小雨在暴雨夜送餐到頂樓豪宅，開門的是三年前不告而別的前男友阿凱……",
+  image: "描述你想要的畫面；有參考圖就用 @ 標記它們。\n例：@圖片1 的女孩穿著 @圖片2 的外套，站在雨夜的霓虹街口，回頭看鏡頭。\n畫好之後按「🎬 變成影片」，這張圖就會直接當首格動起來。",
 };
-const TASK_NAME = { Ref2VA: "參考", T2VA: "純文字", I2VA: "首格", FL2VA: "頭尾格", L2VA: "尾格" };
+const TASK_NAME = { Ref2VA: "參考", T2VA: "純文字", I2VA: "首格", FL2VA: "頭尾格", L2VA: "尾格", T2I: "文生圖", Edit: "參考生圖" };
+const REF_HINT = {
+  ref: "在素材庫按「＋參考」加入，再用 <b>@</b> 標記；影片可以切成「延伸」",
+  image: "最多 9 張參考圖，用 <b>@</b> 標記；不標記就照順序全部使用",
+  agent: "角色、場景的參考圖（照順序叫 圖片1、圖片2…），規劃模型會決定每一段用哪幾張",
+};
+// tray-using modes that only take pictures
+const PICTURE_TRAY = new Set(["image", "agent"]);
 
 const state = {
   library: [], folders: [], folder: null, tray: [], libKind: "all", mode: "ref", first: null, last: null,
-  aspect: "auto", resolution: "720P", intensity: "off",
+  aspect: "auto", resolution: "720P", intensity: "off", imageSize: "1.3K", top: "video", videoMode: "ref",
   config: null, rewriteSig: null, busy: false, jobs: [], seenStatus: {}, videoTab: {},
 };
 
@@ -39,7 +49,7 @@ function toast(msg, isError) {
 
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const assetById = id => state.library.find(a => a.id === id);
-const thumbStyle = a => a.thumb ? `style="background-image:url('/library/${a.thumb}')"` : "";
+const thumbStyle = a => a.thumb ? `style="background-image:url('library/${a.thumb}')"` : "";
 
 function fmtEta(sec) {
   if (sec == null) return "";
@@ -50,7 +60,7 @@ function fmtEta(sec) {
 
 // ------------------------------------------------------------ library
 async function loadLibrary() {
-  [state.library, state.folders] = await Promise.all([api("/api/library"), api("/api/folders")]);
+  [state.library, state.folders] = await Promise.all([api("api/library"), api("api/folders")]);
   if (state.folder && !state.folders.some(f => f.id === state.folder)) state.folder = null;
   state.tray = state.tray.filter(t => assetById(t.id));
   if (state.first && !assetById(state.first)) state.first = null;
@@ -63,7 +73,8 @@ async function loadLibrary() {
 function cardActions(a) {
   const inTray = state.tray.some(t => t.id === a.id);
   const btns = [];
-  if (state.mode === "ref") btns.push(`<button class="pill small yellow" data-act="add">${inTray ? "已加入 ✓" : "＋參考"}</button>`);
+  if (state.mode === "ref" || (PICTURE_TRAY.has(state.mode) && a.kind === "image"))
+    btns.push(`<button class="pill small yellow" data-act="add">${inTray ? "已加入 ✓" : "＋參考"}</button>`);
   if (state.mode === "frames" && a.kind === "image") {
     btns.push(`<button class="pill small mint" data-act="first">設為首格</button>`);
     btns.push(`<button class="pill small mint" data-act="last">設為尾格</button>`);
@@ -89,13 +100,13 @@ function renderLibrary() {
     const thumbs = inside.filter(a => a.thumb).slice(0, 4);
     return `<div class="folder" data-folder="${f.id}" title="點開資料夾；把素材拖到這裡就會放進去">
       <span class="fcount">${inside.length}</span>
-      <div class="ficon ${thumbs.length ? "" : "empty"}">${thumbs.length ? thumbs.map(a => `<i style="background-image:url('/library/${a.thumb}')"></i>`).join("") : "📁"}</div>
+      <div class="ficon ${thumbs.length ? "" : "empty"}">${thumbs.length ? thumbs.map(a => `<i style="background-image:url('library/${a.thumb}')"></i>`).join("") : "📁"}</div>
       <div class="fname">📁 ${esc(f.name)}</div>
       <div class="card-actions"><button class="pill small yellow" data-fact="open">打開</button>
         <button class="pill small" data-fact="rename">改名</button><button class="pill small" data-fact="delete">刪除</button></div></div>`;
   });
   const cards = items.map(a => {
-    const inTray = state.mode === "ref" && state.tray.some(t => t.id === a.id);
+    const inTray = (state.mode === "ref" || PICTURE_TRAY.has(state.mode)) && state.tray.some(t => t.id === a.id);
     const slot = state.mode === "frames" ? (a.id === state.first ? "首格" : a.id === state.last ? "尾格" : "") : "";
     const extra = a.kind === "video" ? ` · ${a.duration}s${a.has_audio ? " · 有聲" : ""}` : "";
     return `<div class="card ${inTray || slot ? "in-tray" : ""}" data-id="${a.id}" draggable="true">
@@ -109,15 +120,15 @@ function renderLibrary() {
 }
 
 async function moveAssets(ids, folder) {
-  state.library = await api("/api/library/move", { ids, folder });
+  state.library = await api("api/library/move", { ids, folder });
   renderLibrary();
   const f = state.folders.find(x => x.id === folder);
   toast(f ? `放進「${f.name}」了 📁` : "移到全部素材了");
 }
 
 async function folderAction(body) {
-  state.folders = await api("/api/folders", body);
-  if (body.action === "delete") state.library = await api("/api/library");
+  state.folders = await api("api/folders", body);
+  if (body.action === "delete") state.library = await api("api/library");
   renderLibrary();
 }
 
@@ -125,7 +136,7 @@ async function uploadFiles(files) {
   for (const f of files) {
     try {
       toast(`上傳中：${f.name}`);
-      const item = await api("/api/upload", f, { "X-Filename": encodeURIComponent(f.name), "X-Folder": state.folder || "",
+      const item = await api("api/upload", f, { "X-Filename": encodeURIComponent(f.name), "X-Folder": state.folder || "",
         "Content-Type": "application/octet-stream" });
       state.library.unshift(item);
     } catch (e) { toast(`${f.name} 上傳失敗：${e.message}`, true); }
@@ -171,6 +182,7 @@ function renderTray() {
 function addToTray(id) {
   if (state.tray.some(t => t.id === id)) return;
   const kind = assetById(id).kind;
+  if (PICTURE_TRAY.has(state.mode) && kind !== "image") return toast("這裡只能用圖片當參考", true);
   const limits = { image: 9, video: 3, audio: 3 };
   if (state.tray.filter(t => assetById(t.id).kind === kind && !t.extend).length >= limits[kind])
     return toast(`${KIND_LABEL[kind]}最多 ${limits[kind]} 個`, true);
@@ -218,7 +230,7 @@ function renderSlots() {
     const a = state[slot] && assetById(state[slot]);
     el.classList.toggle("filled", !!a);
     $(".slot-body", el).innerHTML = a
-      ? `<img src="/library/${a.thumb}" alt=""><button class="pill small x" data-clear="${slot}">✕</button>`
+      ? `<img src="library/${a.thumb}" alt=""><button class="pill small x" data-clear="${slot}">✕</button>`
       : `在素材庫的圖片上按「設為${slot === "first" ? "首格" : "尾格"}」`;
   }
   renderLibrary();
@@ -226,11 +238,58 @@ function renderSlots() {
 }
 
 // ------------------------------------------------------------ modes
+function setTop(top) {
+  state.top = top;
+  for (const b of $("#topTabs").children) b.classList.toggle("active", b.dataset.top === top);
+  setMode(top === "video" ? state.videoMode : top);
+  if (top === "agent") loadRuns();
+  if (top === "projects") loadProjectGrid();
+}
+
+// ---------------------------------------------------------------- 📁 專案 (CreativeBox: DramaBox lives at ../project/)
+const IN_CREATIVEBOX = location.pathname.startsWith("/create/");
+const projectUrl = hash => "../project/" + (hash ? "#" + hash : "");
+
+async function loadProjectGrid() {
+  let works = [];
+  try { works = await (await fetch("../project/api/home")).json(); } catch (e) { return toast("讀不到專案清單：" + e.message, true); }
+  const R = { script: "劇本", video: "影片劇", radio: "廣播劇", avg: "AVG" };
+  const media = (id, rel) => `../project/media/${encodeURIComponent(id)}/${rel.split("/").map(encodeURIComponent).join("/")}`;
+  $("#projGrid").innerHTML = works.map(w => `<div class="proj-card" data-proj="${esc(w.id)}">
+      <div class="pc-cover">${w.cover ? `<img src="${media(w.id, w.cover)}" alt="">` : "🎬"}</div>
+      <div class="pc-body"><b>${esc(w.title)}</b><span class="hint">${w.episodes || "?"} 集 · ${new Date(w.updated * 1000).toLocaleDateString()}</span>
+        <div class="pc-tags">${w.routes.map(r => `<span>${R[r] || r}</span>`).join("")}</div></div></div>`).join("")
+    + `<div class="proj-card new" data-proj-new="1">＋ 開一部新作品</div>`;
+}
+
+function newProjectFromIdea() {
+  // the idea (and the @ references in the tray) travel to the project home, where the interpretation layer runs
+  const idea = $("#prompt").value.trim();
+  const ids = state.tray.filter(t => assetById(t.id)?.kind !== undefined).map(t => t.id);
+  location.href = projectUrl("new=" + encodeURIComponent(idea) + (ids.length ? "&ids=" + ids.join(",") : ""));
+}
+
 function setMode(mode) {
   state.mode = mode;
+  const isProjects = mode === "projects";
+  if (!PICTURE_TRAY.has(mode) && !isProjects) state.videoMode = mode;
+  const isImage = mode === "image", isAgent = mode === "agent";
+  const group = isImage ? "image" : isAgent ? "agent" : isProjects ? "projects" : "video";
+  $("#projPane").hidden = !isProjects;
+  $("#projRow").hidden = !isProjects;
+  document.querySelector(".options").hidden = isProjects;
   for (const b of $("#modeTabs").children) b.classList.toggle("active", b.dataset.mode === mode);
-  $("#refArea").hidden = mode !== "ref";
+  $("#modeTabs").hidden = group !== "video";
+  for (const el of document.querySelectorAll(".opt[data-only]")) el.hidden = !el.dataset.only.split(" ").includes(group);
+  $("#refArea").hidden = !(mode === "ref" || PICTURE_TRAY.has(mode));
+  $("#refHint").innerHTML = REF_HINT[PICTURE_TRAY.has(mode) ? mode : "ref"];
+  $("#rewriteRow").hidden = isAgent || isProjects;
+  $("#agentRow").hidden = !isAgent;
+  $("#agentPanel").hidden = !isAgent;
+  $("#rewriteBox").hidden = isAgent || !$("#rewriteText").value;
   $("#framesArea").hidden = mode !== "frames";
+  if (!state.busy) $("#btnGenerate").textContent = isImage ? "🖼 生成圖片" : "🎬 生成影片";
+  if (state.config) checkRewriter();
   $("#prompt").placeholder = PLACEHOLDER[mode];
   $("#extendNote").hidden = !(mode === "ref" && state.tray.some(t => t.extend));
   renderLibrary();
@@ -244,7 +303,7 @@ function renderHighlight() {
   const valid = new Set(trayLabels().filter(t => t.label).map(t => t.label));
   let html = "";
   let last = 0;
-  if (state.mode === "ref") {
+  if (state.mode === "ref" || PICTURE_TRAY.has(state.mode)) {
     for (const m of ta.value.matchAll(MENTION_RE)) {
       const kind = MENTION_KIND[m[1].toLowerCase()] || MENTION_KIND[m[1]];
       const ok = valid.has(KIND_LABEL[kind] + m[2]);
@@ -275,7 +334,7 @@ function caretCoords(ta) {
 const menu = { open: false, items: [], index: 0, start: 0 };
 
 function updateMentionMenu() {
-  if (state.mode !== "ref") return closeMenu();
+  if (state.mode !== "ref" && !PICTURE_TRAY.has(state.mode)) return closeMenu();
   const ta = $("#prompt");
   const upto = ta.value.slice(0, ta.selectionStart);
   const m = upto.match(/@([^\s@]{0,12})$/);
@@ -313,13 +372,14 @@ function insertMention(label, replaceFrom) {
 // ------------------------------------------------------------ rewrite + generate
 function requestBody() {
   return {
-    mode: state.mode, prompt: $("#prompt").value, tray: state.mode === "ref" ? state.tray : [],
+    mode: state.mode, prompt: $("#prompt").value, tray: state.mode === "ref" || state.mode === "image" ? state.tray : [],
+    image_size: state.imageSize,
     first_id: state.mode === "frames" ? state.first : null, last_id: state.mode === "frames" ? state.last : null,
     seconds: +$("#seconds").value, aspect: state.aspect, resolution: state.resolution, intensity: state.intensity,
     skill: $("#skill").value, seed: $("#seed").value === "" ? null : +$("#seed").value, fast: $("#fastMode").checked,
   };
 }
-const signature = () => { const b = requestBody(); return JSON.stringify([b.mode, b.prompt, b.tray, b.first_id, b.last_id, b.seconds, b.skill]); };
+const signature = () => { const b = requestBody(); return JSON.stringify([b.mode, b.prompt, b.tray, b.first_id, b.last_id, b.mode === "image" ? 0 : b.seconds, b.skill]); };
 
 function markStale() {
   if ($("#rewriteBox").hidden) return;
@@ -330,14 +390,14 @@ function setBusy(busy, label) {
   state.busy = busy;
   $("#btnGenerate").disabled = busy;
   $("#btnRewrite").disabled = busy || $("#useRewrite").disabled;
-  $("#btnGenerate").textContent = busy ? label : "🎬 生成影片";
+  $("#btnGenerate").textContent = busy ? label : state.mode === "image" ? "🖼 生成圖片" : "🎬 生成影片";
 }
 
 function validate() {
   const body = requestBody();
   if (!body.prompt.trim()) throw new Error("請先寫一段描述喔");
   if (body.mode === "frames" && !body.first_id && !body.last_id) throw new Error("頭尾格模式至少要放一張首格或尾格");
-  if (body.mode === "ref") {
+  if (body.mode === "ref" || body.mode === "image") {
     const valid = new Set(trayLabels().filter(t => t.label).map(t => t.label));
     for (const m of body.prompt.matchAll(MENTION_RE)) {
       const kind = MENTION_KIND[m[1].toLowerCase()] || MENTION_KIND[m[1]];
@@ -371,7 +431,7 @@ async function doRewrite() {
   $("#btnRewrite").textContent = "改寫中…";
   rewriteTimer(true);
   try {
-    const r = await api("/api/rewrite", body);
+    const r = await api("api/rewrite", body);
     $("#rewriteText").value = r.prompt;
     $("#rewriteMeta").textContent = `· ${TASK_NAME[r.task] || r.task} · ${r.seconds_used} 秒`;
     $("#rewriteBox").hidden = false;
@@ -394,7 +454,7 @@ async function doGenerate() {
         ? $("#rewriteText").value : await doRewrite();
     }
     setBusy(true, "送出中…");
-    await api("/api/generate", body);
+    await api("api/generate", body);
     toast("丟進玩具箱了！🎁");
     await loadJobs();
   } catch (e) {
@@ -407,30 +467,34 @@ async function doGenerate() {
 // ------------------------------------------------------------ jobs
 const STATUS = { queued: "排隊中", running: "生成中", joining: "接回原片", done: "完成", error: "失敗" };
 const STAGE = {
-  queued: "排隊等 ComfyUI 有空…", prepare: "準備素材、載入模型", low: "先畫出低解析度的動作與構圖",
+  queued: "排隊等 ComfyUI 有空…", prepare: "準備素材、載入模型", draw: "一筆一筆畫出來", low: "先畫出低解析度的動作與構圖",
   high: "長出高解析度的細節", decode: "解碼畫面與聲音、存檔", join: "把新片段接回原片",
 };
 const INTENSITY = { off: "文戲", low: "動作·低", mid: "動作·中", high: "動作·高" };
 
-function viewUrl(v) { return `/api/view?filename=${encodeURIComponent(v.filename)}&subfolder=${encodeURIComponent(v.subfolder || "")}&type=${v.type || "output"}`; }
+function viewUrl(v) { return `api/view?filename=${encodeURIComponent(v.filename)}&subfolder=${encodeURIComponent(v.subfolder || "")}&type=${v.type || "output"}`; }
 
 function jobMedia(j) {
+  if (j.mode === "image" && j.status === "done" && j.image) {
+    const cheer = state.cheer?.has(j.id) ? `<img class="cheer" src="static/img/cheer.png" alt="">` : "";
+    return `<div class="media">${cheer}<a href="${viewUrl(j.image)}" target="_blank"><img class="result" src="${viewUrl(j.image)}" alt=""></a></div>`;
+  }
   if (j.status === "done" && (j.video || j.full_video)) {
     const tabs = [];
-    if (j.full_video) tabs.push(["full", "完整版", `/outputs/${j.full_video}`]);
+    if (j.full_video) tabs.push(["full", "完整版", `outputs/${j.full_video}`]);
     if (j.video) tabs.push(["part", j.full_video ? "只看新片段" : "影片", viewUrl(j.video)]);
     const pick = state.videoTab[j.id] || tabs[0][0];
     const cur = tabs.find(t => t[0] === pick) || tabs[0];
-    const cheer = state.cheer?.has(j.id) ? `<img class="cheer" src="/static/img/cheer.png" alt="">` : "";
+    const cheer = state.cheer?.has(j.id) ? `<img class="cheer" src="static/img/cheer.png" alt="">` : "";
     return `<div class="media">${cheer}<video controls preload="metadata" src="${cur[2]}"></video></div>` +
       (tabs.length > 1 ? `<div class="vtabs">${tabs.map(t => `<button data-tab="${t[0]}" class="${t[0] === cur[0] ? "active" : ""}">${t[1]}</button>`).join("")}</div>` : "");
   }
   if (j.status === "error") {
-    return `<div class="stage err"><img src="/static/img/oops.png" alt=""><div class="slabel">哎呀，這次沒做出來</div></div>`;
+    return `<div class="stage err"><img src="static/img/oops.png" alt=""><div class="slabel">哎呀，這次沒做出來</div></div>`;
   }
   const p = j.progress || { stage: "queued", percent: 0 };
   const color = p.stage === "high" ? "blue" : p.stage === "decode" || p.stage === "join" ? "green" : "";
-  return `<div class="stage run"><img src="/static/img/mascot.png" alt="">
+  return `<div class="stage run"><img src="static/img/mascot.png" alt="">
     <div class="slabel">${STAGE[p.stage] || "生成中"}</div>
     <div class="bar ${color}"><i style="width:${p.percent}%"></i></div>
     <div class="eta">${p.percent}% · ${fmtEta(p.eta)}${p.live === false ? "（進度監看未連線，時間是估的）" : ""}</div></div>`;
@@ -438,7 +502,7 @@ function jobMedia(j) {
 
 async function loadJobs() {
   let jobs = [];
-  try { jobs = await api("/api/jobs"); } catch (e) { return schedulePoll(true); }
+  try { jobs = await api("api/jobs"); } catch (e) { return schedulePoll(true); }
   state.cheer = state.cheer || new Set();
   for (const j of jobs) {
     const prev = state.seenStatus[j.id];
@@ -461,14 +525,16 @@ function renderJobs() {
     return `<div class="job" data-id="${j.id}">${jobMedia(j)}<div class="jbody">
       <div class="jmeta"><span class="st ${j.status}">${STATUS[j.status]}</span>
         <span class="task">${TASK_NAME[j.task] || "參考"}${j.extend ? "＋延伸" : ""}</span>
-        <span>${j.width ? `${j.width}×${j.height}` : `${j.aspect} ${j.resolution}`}</span><span>${j.seconds}s</span>
-        <span>${INTENSITY[j.intensity] || j.intensity}</span>${skill ? `<span>${esc(skill)}</span>` : ""}
+        <span>${j.width ? `${j.width}×${j.height}` : `${j.aspect} ${j.resolution}`}</span>
+        ${j.mode === "image" ? `<span>${(j.refs || []).length} 張參考</span>` :
+          `<span>${j.seconds}s</span><span>${INTENSITY[j.intensity] || j.intensity}</span>${skill ? `<span>${esc(skill)}</span>` : ""}`}
         <span>seed ${j.seed}</span><span>${new Date(j.created * 1000).toLocaleString()}</span></div>
       <div class="jprompt" title="${esc(j.prompt)}">${esc(j.prompt)}</div>
       ${j.error ? `<div class="error">${esc(j.error)}</div>` : ""}${j.join_error ? `<div class="error">${esc(j.join_error)}</div>` : ""}
       <div class="jactions">
         <button class="pill small" data-act="reuse">載入設定</button>
         <button class="pill small" data-act="copy">複製提示詞</button>
+        ${j.status === "done" && j.mode === "image" ? `<button class="pill small blue" data-act="tovideo" title="把這張圖當首格，直接生成影片">🎬 變成影片</button>` : ""}
         ${j.status === "done" ? `<button class="pill small mint" data-act="tolib">＋加入素材庫</button>` : ""}
         <button class="pill small" data-act="del">移除</button>
       </div></div></div>`;
@@ -496,7 +562,8 @@ function schedulePoll(active) {
 }
 
 function reuseJob(job) {
-  setMode(job.mode || "ref");
+  if (job.mode === "image") { state.imageSize = job.image_size || state.imageSize; setTop("image"); }
+  else { state.videoMode = job.mode || "ref"; setTop("video"); }
   $("#prompt").value = job.prompt;
   state.tray = (job.tray || []).filter(t => assetById(t.id));
   state.first = job.first_id && assetById(job.first_id) ? job.first_id : null;
@@ -514,13 +581,89 @@ function reuseJob(job) {
   toast("已載入這次的設定（含最終提示詞）");
 }
 
+// 🖼 → 🎬: the picture becomes the first frame of an I2VA clip. The rewriter sees the picture, so the
+// picture's own description is enough to start from; the current video settings (seconds, intensity) apply.
+async function imageToVideo(job) {
+  toast("把這張圖放進素材庫，當首格…");
+  const item = await api("api/library/from_job", { id: job.id, folder: state.folder });
+  if (!assetById(item.id)) state.library.unshift(item);
+  state.videoMode = "frames";
+  setTop("video");
+  state.first = item.id; state.last = null; state.aspect = "auto";
+  syncSegs(); renderSlots();
+  $("#prompt").value = "讓這張圖自然地動起來，延續畫面裡的情境：" + job.prompt.replace(MENTION_RE, "").trim();
+  renderHighlight();
+  // the rewrite switch is off in the picture tab (local provider); wait until it is restored for video,
+  // otherwise this clip goes out with the raw Chinese description and H3 reads it aloud / burns subtitles
+  await checkRewriter();
+  await doGenerate();
+}
+
+// ------------------------------------------------------------ 🤖 短片 Agent
+const RUN_STATUS = { queued: "排隊中", planning: "規劃中", generating: "生成中", done: "完成", error: "失敗" };
+const SEG_STATUS = { waiting: "等待", rewriting: "改寫提示詞", generating: "生成中", done: "完成" };
+
+async function startAgent() {
+  const prompt = $("#prompt").value.trim();
+  if (!prompt) throw new Error("請寫一句你想要的短片");
+  const images = state.tray.filter(t => assetById(t.id)?.kind === "image").map(t => t.id);
+  // the planner sees 圖片1..N in tray order, so "@圖片2" in the instruction already means the right picture
+  await api("api/agent/start", {
+    instruction: prompt, images, total: +$("#agentSeconds").value, aspect: state.aspect,
+    resolution: state.resolution, intensity: state.intensity, planner: $("#agentPlanner").value,
+  });
+  toast("開始規劃短片 🤖");
+  loadRuns();
+}
+
+function runCard(r) {
+  const plan = r.plan || {};
+  const meta = r.plan_meta;
+  const segs = (plan.segments || []).map((s, i) => {
+    const st = (r.segments || [])[i]?.status || "waiting";
+    const lines = (s.dialogue || []).filter(d => d.line).map(d => `<div class="line">${esc(d.who)}：「${esc(d.line)}」</div>`).join("");
+    return `<div class="aseg"><div><div class="sno">第 ${i + 1} 段</div><div>${s.seconds}s</div><span class="sst ${st}">${SEG_STATUS[st] || st}</span></div>
+      <div>${esc(s.action)}${lines}<div class="hint">結尾：${esc(s.end_state)}</div></div></div>`;
+  }).join("");
+  const fin = r.final?.full_video ? `outputs/${r.final.full_video}` : r.final?.video ? viewUrl(r.final.video) : "";
+  return `<div class="run" data-id="${r.id}">
+    <h3>${esc(plan.title || r.instruction.slice(0, 30))}</h3>
+    ${plan.logline ? `<div class="logline">${esc(plan.logline)}</div>` : ""}
+    <div class="rmeta"><span>${RUN_STATUS[r.status] || r.status}</span><span>${r.total} 秒</span><span>${r.aspect} ${r.resolution}</span>
+      <span>${r.planner === "gemini" ? "💎 Gemini" : "🧠 本地 MoE"}</span>
+      ${meta ? `<span>規劃 ${meta.seconds} 秒・${meta.rounds} 輪</span>` : ""}</div>
+    ${r.error ? `<div class="error">${esc(r.error)}</div>` : ""}
+    ${fin ? `<video controls preload="metadata" src="${fin}"></video>` : ""}
+    ${segs}
+    ${r.status === "planning" || r.status === "generating" ? `<div class="revise"><button class="pill small" data-ract="stop">停止</button></div>` :
+      r.plan ? `<div class="revise"><input placeholder="想改什麼？例：第二段改成下雨，她撐著傘" maxlength="200"><button class="pill small blue" data-ract="revise">✏️ 修改</button></div>` : ""}
+    <div class="rlog">${(r.log || []).slice(-4).map(l => esc(l[1])).join("<br>")}</div></div>`;
+}
+
+async function loadRuns() {
+  clearTimeout(loadRuns.t);
+  if (state.top !== "agent") return;
+  let runs = [];
+  try { runs = await api("api/agent/runs"); } catch (e) { return; }
+  const panel = $("#agentPanel");
+  const html = runs.slice(0, 5).map(runCard).join("") || `<div class="hint">還沒有短片。放幾張參考圖、寫一句話，按「🤖 開始做短片」。</div>`;
+  // keep a typed revision and a playing video intact: only redraw when something changed
+  const el = document.activeElement;
+  const typing = panel.contains(el) && el.tagName === "INPUT" && el.value;
+  const playing = [...panel.querySelectorAll("video")].some(v => !v.paused);
+  if (panel.dataset.html !== html && !typing && !playing) { panel.innerHTML = html; panel.dataset.html = html; }
+  const active = runs.some(r => ["queued", "planning", "generating"].includes(r.status));
+  loadRuns.t = setTimeout(loadRuns, active ? 3000 : 15000);
+}
+
 // ------------------------------------------------------------ settings
 async function loadConfig() {
-  state.config = await api("/api/config");
+  state.config = await api("api/config");
   $("#skill").innerHTML = `<option value="">不使用</option>` +
     state.config.skills.map(s => `<option value="${s.id}">${esc(s.title)}</option>`).join("");
-  $("#aspectSeg").innerHTML = `<button data-v="auto" title="頭尾格跟著首格、延伸跟著原片">自動</button>` +
+  $("#aspectSeg").innerHTML = `<button data-v="auto" title="頭尾格跟著首格、延伸跟著原片；生圖跟著第一張參考圖">自動</button>` +
     state.config.aspects.map(a => `<button data-v="${a}">${a}</button>`).join("");
+  $("#imgSizeSeg").innerHTML = (state.config.image_sizes || []).map(v => `<button data-v="${v}">${v}</button>`).join("");
   syncSegs();
   checkRewriter();
 }
@@ -528,10 +671,12 @@ async function loadConfig() {
 // The rewriter is optional (Colab can skip its 7 GB download): without it, the switch turns off.
 async function checkRewriter() {
   const rw = state.config.config.rewriter;
-  let ok = rw.provider && rw.provider !== "local";
-  if (!ok) {
+  // pictures are rewritten with Qwen's own spec, which only remote providers run (the local 9B is H3-only)
+  const imageLocal = state.mode === "image" && (rw.provider || "local") === "local";
+  let ok = !imageLocal && rw.provider && rw.provider !== "local";
+  if (!ok && !imageLocal) {
     let models = [];
-    try { models = await api("/api/models"); } catch (e) { return; }
+    try { models = await api("api/models"); } catch (e) { return; }
     ok = models.includes(rw.model);
   }
   const sw = $("#useRewrite");
@@ -539,13 +684,14 @@ async function checkRewriter() {
   else if (sw.disabled) sw.checked = true;
   sw.disabled = !ok;
   $("#btnRewrite").disabled = !ok;
-  sw.closest("label").title = ok ? "" : "沒有安裝本地改寫模型：可以在設定改用 Gemini 或 OpenAI 端點，或直接用你寫的描述生成";
+  sw.closest("label").title = ok ? "" : imageLocal ? "圖片的改寫要用 Gemini 或 OpenAI 端點（本地 9B 是影片專用）；Qwen 直接看得懂你的描述"
+    : "沒有安裝本地改寫模型：可以在設定改用 Gemini 或 OpenAI 端點，或直接用你寫的描述生成";
   const name = { local: "本地小模型", gemini: "Gemini", openai: "OpenAI 端點" }[rw.provider || "local"];
   sw.closest("label").lastChild.textContent = ` ✨ 提示詞改寫（${name}）`;
 }
 
 function syncSegs() {
-  for (const [id, key] of [["#aspectSeg", "aspect"], ["#resSeg", "resolution"], ["#intensitySeg", "intensity"]])
+  for (const [id, key] of [["#aspectSeg", "aspect"], ["#resSeg", "resolution"], ["#intensitySeg", "intensity"], ["#imgSizeSeg", "imageSize"]])
     for (const b of $(id).children) b.classList.toggle("active", b.dataset.v === state[key]);
 }
 
@@ -570,7 +716,7 @@ async function openSettings() {
   const { config: c, lora_nodes } = state.config;
   const rw = c.rewriter;
   let models = [];
-  try { models = await api("/api/models"); } catch (e) { toast(e.message, true); }
+  try { models = await api("api/models"); } catch (e) { toast(e.message, true); }
   if (!models.includes(rw.model)) models.unshift(rw.model);
   $("#cfgModel").innerHTML = models.map(m => `<option ${m === rw.model ? "selected" : ""}>${esc(m)}</option>`).join("");
   $("#cfgThinking").checked = rw.thinking;
@@ -605,7 +751,7 @@ async function verifyProvider(p) {
   const out = $(p === "gemini" ? "#gemResult" : "#oaResult");
   out.className = "vres"; out.textContent = "連線中…";
   try {
-    const r = await api("/api/rewriter/test", { provider: p, conf: providerForm(p) });
+    const r = await api("api/rewriter/test", { provider: p, conf: providerForm(p) });
     out.className = "vres ok";
     out.textContent = `✅ 端點活著（${(r.ms / 1000).toFixed(1)} 秒，回覆「${r.reply}」）` + (r.models.length ? `，清單抓到 ${r.models.length} 個模型` : "");
     if (r.models.length) setDatalist(p === "gemini" ? "#gemModels" : "#oaModels", (p === "gemini" ? GEMINI_DEFAULTS : []).concat(r.models));
@@ -627,7 +773,7 @@ async function saveSettings() {
   c.comfy_url = $("#cfgUrl").value.trim();
   const sel = [...document.querySelectorAll("[data-lora]")];
   c.loras = { drama: sel.filter(s => s.value === "drama").map(s => s.dataset.lora), action: sel.filter(s => s.value === "action").map(s => s.dataset.lora) };
-  await api("/api/config", c);
+  await api("api/config", c);
   await loadConfig();
   toast("設定已儲存");
 }
@@ -635,7 +781,7 @@ async function saveSettings() {
 async function checkComfy() {
   const el = $("#comfyStatus");
   try {
-    await api("/api/models");
+    await api("api/models");
     el.textContent = "ComfyUI 已連線"; el.className = "pill status ok";
   } catch (e) {
     el.textContent = "ComfyUI 未連線"; el.className = "pill status bad";
@@ -694,6 +840,13 @@ function bind() {
   for (const id of ["#cfgGemKey", "#cfgOaKey"]) $(id).addEventListener("input", e => (e.target.dataset.clear = ""));
   $("#fastMode").addEventListener("change", e => ($("#fastHint").textContent = e.target.checked ? "8 步" : "12 步"));
 
+  $("#projGrid").addEventListener("click", e => {
+    const c = e.target.closest("[data-proj]");
+    if (c) location.href = projectUrl("p=" + encodeURIComponent(c.dataset.proj));
+    if (e.target.closest("[data-proj-new]")) newProjectFromIdea();
+  });
+  $("#btnNewProject").addEventListener("click", newProjectFromIdea);
+  $("#topTabs").addEventListener("click", e => { const b = e.target.closest("[data-top]"); if (b && !b.disabled) setTop(b.dataset.top); });
   $("#modeTabs").addEventListener("click", e => { const b = e.target.closest("[data-mode]"); if (b) setMode(b.dataset.mode); });
   $("#libTabs").addEventListener("click", e => {
     if (!e.target.dataset.kind) return;
@@ -726,7 +879,7 @@ function bind() {
       renderSlots();
     }
     if (act === "del" && confirm("確定要從素材庫刪除這個素材？")) {
-      await api("/api/library/delete", { id });
+      await api("api/library/delete", { id });
       const i = state.tray.findIndex(t => t.id === id);
       if (i >= 0) removeFromTray(i);
       await loadLibrary();
@@ -771,12 +924,26 @@ function bind() {
     if (mi) { e.preventDefault(); insertMention(menu.items[+mi.dataset.i].label, menu.start); }
   });
 
-  for (const [id, key] of [["#aspectSeg", "aspect"], ["#resSeg", "resolution"], ["#intensitySeg", "intensity"]])
+  for (const [id, key] of [["#aspectSeg", "aspect"], ["#resSeg", "resolution"], ["#intensitySeg", "intensity"], ["#imgSizeSeg", "imageSize"]])
     $(id).addEventListener("click", e => { if (e.target.dataset.v) { state[key] = e.target.dataset.v; syncSegs(); } });
   $("#seconds").addEventListener("input", e => { $("#secondsVal").textContent = e.target.value; markStale(); });
   $("#skill").addEventListener("change", markStale);
   $("#btnRewrite").addEventListener("click", () => doRewrite().catch(e => toast(e.message, true)));
   $("#btnGenerate").addEventListener("click", doGenerate);
+  $("#btnAgent").addEventListener("click", () => startAgent().catch(e => toast(e.message, true)));
+  $("#agentSeconds").addEventListener("input", e => ($("#agentSecondsVal").textContent = e.target.value));
+  $("#agentPanel").addEventListener("click", e => {
+    const run = e.target.closest(".run")?.dataset.id;
+    const act = e.target.dataset.ract;
+    if (!run || !act) return;
+    if (act === "revise") {
+      const input = e.target.closest(".run").querySelector(".revise input");
+      if (!input.value.trim()) return toast("寫一句想怎麼改", true);
+      api("api/agent/revise", { id: run, message: input.value.trim() }).then(() => { input.value = ""; toast("收到，重新規劃中…"); loadRuns(); })
+        .catch(err => toast(err.message, true));
+    }
+    if (act === "stop") api("api/agent/stop", { id: run }).then(() => toast("會在這一段做完後停下")).catch(err => toast(err.message, true));
+  });
 
   $("#jobList").addEventListener("click", async e => {
     const card = e.target.closest(".job");
@@ -789,12 +956,13 @@ function bind() {
       if (act === "copy") { await navigator.clipboard.writeText(job.final_prompt); toast("已複製"); }
       if (act === "tolib") {
         toast("加入素材庫中…");
-        const item = await api("/api/library/from_job", { id: job.id, folder: state.folder });
+        const item = await api("api/library/from_job", { id: job.id, folder: state.folder });
         state.library.unshift(item);
         renderLibrary();
         toast("已加入素材庫，可以拿來延伸或當參考 🧵");
       }
-      if (act === "del") { await api("/api/jobs/delete", { id: job.id }); loadJobs(); }
+      if (act === "tovideo") await imageToVideo(job);
+      if (act === "del") { await api("api/jobs/delete", { id: job.id }); loadJobs(); }
     } catch (err) { toast(err.message, true); }
   });
 
@@ -805,6 +973,8 @@ function bind() {
 (async function init() {
   bind();
   setMode("ref");
+  document.querySelector(".proj-tab").hidden = !IN_CREATIVEBOX;
+  if (IN_CREATIVEBOX && location.hash === "#projects") setTop("projects");
   try {
     await loadConfig();
     await loadLibrary();

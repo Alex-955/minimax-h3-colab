@@ -152,8 +152,8 @@ mark.m-image { background: #22b57340; } mark.m-video { background: #ff8a3d40; } 
 .opt > label { font-size: 13px; font-weight: 800; }
 .opt select, .opt input[type=number] { background: #fff; border: 2.5px solid var(--ink); border-radius: 12px; padding: 6px 10px; font-weight: 700; }
 .opt input[type=range] { accent-color: var(--pink); }
-.seg { display: flex; flex-wrap: wrap; gap: 5px; }
-.seg button { padding: 3px 11px; font-size: 13px; font-weight: 800; border: 2px solid var(--ink); border-radius: 999px; background: #fff; }
+.seg { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 6px; }
+.seg button { padding: 4px 6px; text-align: center; white-space: nowrap; font-size: 13px; font-weight: 800; border: 2px solid var(--ink); border-radius: 999px; background: #fff; }
 .seg button.active { background: var(--yellow); box-shadow: 0 2px 0 var(--ink); }
 .tip { display: inline-block; width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--ink); text-align: center; line-height: 12px; font-size: 10px; cursor: help; }
 
@@ -280,3 +280,42 @@ fieldset select, fieldset input[type=number], fieldset input[type=text], fieldse
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* top-level entries: 🖼 圖片 / 🎬 影片 / 🤖 短片 Agent */
+.toptabs { display: flex; gap: 8px; margin-bottom: 10px; }
+.top { border: 3px solid var(--ink); border-radius: 999px; padding: 6px 16px; background: #fff; font-weight: 900; font-size: 15px; box-shadow: var(--pop); }
+.top.active { background: var(--ink); color: #fff; }
+.top:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
+.top small { font-weight: 700; font-size: 11px; }
+.media img.result { width: 100%; display: block; border-radius: 12px; }
+[hidden] { display: none !important; }
+
+/* 📁 專案 (CreativeBox) */
+.proj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; margin-top: 4px; }
+.proj-card { border: 3px solid var(--ink); border-radius: 16px; overflow: hidden; background: #fff; box-shadow: var(--pop); cursor: pointer; transition: transform .1s; }
+.proj-card:hover { transform: translateY(-3px); }
+.proj-card .pc-cover { position: relative; aspect-ratio: 16 / 10; overflow: hidden; display: grid; place-items: center; font-size: 34px;
+  background: repeating-linear-gradient(45deg, #f3eee2 0 12px, #fbf8f0 12px 24px); }
+.proj-card .pc-cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.proj-card .pc-body { padding: 8px 10px; display: flex; flex-direction: column; gap: 3px; }
+.proj-card .pc-body b { font-size: 15px; }
+.proj-card .pc-tags { display: flex; gap: 4px; flex-wrap: wrap; font-size: 11px; font-weight: 800; }
+.proj-card .pc-tags span { border: 1.5px solid var(--ink); border-radius: 999px; padding: 0 6px; background: #f6f2e8; }
+.proj-card.new { display: grid; place-items: center; min-height: 150px; font-weight: 900; color: var(--muted); border-style: dashed; }
+
+/* 🤖 短片 Agent */
+.agent-panel { margin-top: 12px; display: flex; flex-direction: column; gap: 12px; }
+.run { border: 3px solid var(--ink); border-radius: 18px; padding: 12px 14px; background: #fff; box-shadow: var(--pop); }
+.run h3 { margin: 0 0 4px; font-size: 17px; font-weight: 900; }
+.run .logline { color: var(--muted); font-weight: 700; margin-bottom: 8px; }
+.run .rmeta { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; font-weight: 800; margin-bottom: 8px; }
+.run .rmeta span { border: 2px solid var(--ink); border-radius: 999px; padding: 1px 8px; }
+.aseg { display: grid; grid-template-columns: 58px 1fr; gap: 8px; padding: 8px 0; border-top: 2px dashed #ddd; font-size: 13px; }
+.aseg .sno { font-weight: 900; }
+.aseg .sst { display: inline-block; font-size: 11px; font-weight: 800; border-radius: 999px; padding: 0 6px; background: #eee; margin-top: 4px; }
+.aseg .sst.done { background: var(--mint, #bdf5d6); } .aseg .sst.generating, .aseg .sst.rewriting { background: var(--yellow); }
+.aseg .line { color: #b0306b; font-weight: 800; }
+.run video { width: 100%; max-height: 520px; border-radius: 12px; background: #000; margin: 8px 0; }
+.run .revise { display: flex; gap: 8px; margin-top: 8px; }
+.run .revise input { flex: 1; border: 2.5px solid var(--ink); border-radius: 12px; padding: 6px 10px; font-weight: 700; }
+.run .rlog { font-size: 12px; color: var(--muted); margin-top: 6px; max-height: 90px; overflow: auto; }

@@ -491,12 +491,21 @@ DATA.mkdir(parents=True, exist_ok=True)
 videos, out_dir = DATA / 'videos', COMFY / 'output' / 'H3Toybox'
 videos.mkdir(exist_ok=True)
 out_dir.parent.mkdir(parents=True, exist_ok=True)
+if out_dir.is_symlink() and out_dir.resolve() != videos.resolve():
+    # 上一次執行的連結指向別的地方（例如第一次沒掛上雲端硬碟、存到了暫存空間）：換成這次的位置
+    old_target = out_dir.resolve()
+    out_dir.unlink()
+    if old_target.is_dir():
+        for f in old_target.iterdir():
+            if not (videos / f.name).exists():
+                shutil.move(str(f), str(videos / f.name))
 if out_dir.is_dir() and not out_dir.is_symlink():
     for f in out_dir.iterdir():
         shutil.move(str(f), str(videos / f.name))
     out_dir.rmdir()
 if not out_dir.exists():
     out_dir.symlink_to(videos, target_is_directory=True)
+print('🎬 影片寫到：', out_dir, '→', out_dir.resolve())
 # H3 Toybox 的 Colab 設定（保留使用者在網頁設定頁改過的內容，只覆寫這台機器的路徑）
 (COMFY / 'input').mkdir(exist_ok=True)
 cfg_path = DATA / 'config.json'

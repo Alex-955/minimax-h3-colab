@@ -47,8 +47,8 @@
   },
   "53": {
     "inputs": {
-      "lora_name": "minimax_h3_dmad_full_dareties_v4_step600_comfy_fro.safetensors",
-      "strength_model": 0.8000000000000002,
+      "lora_name": "pika_h3_flex_ref2va_v1_bf16.safetensors",
+      "strength_model": 1.0,
       "model": [
         "192",
         0

@@ -416,8 +416,9 @@ files = [  # (repo, 檔案, 放到 models/ 底下的哪裡)
     ('Comfy-Org/MiniMax-H3', 'text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors', 'text_encoders'),
     ('Comfy-Org/MiniMax-H3', 'vae/minimax_h3_video_vae_int8_convrot.safetensors', 'vae'),
     ('Comfy-Org/MiniMax-H3', 'vae/minimax_h3_audio_vae_fp32.safetensors', 'vae'),
+    # pika flex Ref2VA（2026-11-04 取代 dmad）：影片與 32×32 TTS 共用這一顆
+    ('Comfy-Org/MiniMax-H3', 'loras/pika_h3_flex_ref2va_v1_bf16.safetensors', 'loras'),
 ] + [(ASSETS, f, str(Path(f).parent)) for f in [
-    'loras/minimax_h3_dmad_full_dareties_v4_step600_comfy_fro.safetensors',
     'loras/minimax_h3_turbo_v4_step600_ema_DasiwaREF2VAHybridV1_0_curveproj1025_compat_v001.safetensors',
     'loras/MysticXXX_MMH3-V2.safetensors',
     'loras/H3_Combat_V2.safetensors',

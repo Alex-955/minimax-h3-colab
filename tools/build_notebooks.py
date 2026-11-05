@@ -473,10 +473,6 @@ def wait_http(url, name, log, tries=180):
 for proc in ('server', 'toybox'):
     if proc in globals() and globals()[proc].poll() is None:
         globals()[proc].terminate(); globals()[proc].wait()
-# ComfyUI 只當引擎：只聽 127.0.0.1，不對外開介面
-server = subprocess.Popen([sys.executable, 'main.py', '--listen', '127.0.0.1', '--port', '8188'],
-                          cwd=str(COMFY), stdout=open('/content/comfyui.log', 'w'), stderr=subprocess.STDOUT)
-wait_http('http://127.0.0.1:8188/system_stats', 'ComfyUI', '/content/comfyui.log')
 # 作品放哪裡：雲端硬碟（授權成功）或這台執行階段的暫存空間
 DATA = Path('/content/h3toybox_data')
 if SAVE_TO_DRIVE:
@@ -487,25 +483,30 @@ if SAVE_TO_DRIVE:
     except Exception as e:
         print('⚠️ 沒有掛上雲端硬碟（', e, '）：這次的作品只存在暫存空間，關掉執行階段就會消失')
 DATA.mkdir(parents=True, exist_ok=True)
-# ComfyUI 生成的影片直接寫進 DATA/videos（用連結，不用另外同步）
-videos, out_dir = DATA / 'videos', COMFY / 'output' / 'H3Toybox'
-videos.mkdir(exist_ok=True)
-out_dir.parent.mkdir(parents=True, exist_ok=True)
-if out_dir.is_symlink() and out_dir.resolve() != videos.resolve():
-    # 上一次執行的連結指向別的地方（例如第一次沒掛上雲端硬碟、存到了暫存空間）：換成這次的位置
-    old_target = out_dir.resolve()
+# ComfyUI 的輸出資料夾直接設在 DATA/output。不能用連結把 output/H3Toybox 接過去：
+# ComfyUI 存檔與 /view 都會解開連結檢查真實位置，指到 output 外面就報
+# 「Saving image outside the output folder is not allowed」。
+output_root = DATA / 'output'
+videos, out_dir = output_root / 'H3Toybox', COMFY / 'output' / 'H3Toybox'
+videos.mkdir(parents=True, exist_ok=True)
+# 舊版留下的東西搬過來，以前生成的影片才看得到：DATA/videos、舊連結指向的資料夾、機器上的 output/H3Toybox
+old_dirs = [DATA / 'videos']
+if out_dir.is_symlink():
+    old_dirs.append(out_dir.resolve())
     out_dir.unlink()
-    if old_target.is_dir():
-        for f in old_target.iterdir():
-            if not (videos / f.name).exists():
+elif out_dir.is_dir():
+    old_dirs.append(out_dir)
+for old in old_dirs:
+    if old.is_dir() and old.resolve() != videos.resolve():
+        for f in old.iterdir():
+            if f.is_file() and not (videos / f.name).exists():
                 shutil.move(str(f), str(videos / f.name))
-if out_dir.is_dir() and not out_dir.is_symlink():
-    for f in out_dir.iterdir():
-        shutil.move(str(f), str(videos / f.name))
-    out_dir.rmdir()
-if not out_dir.exists():
-    out_dir.symlink_to(videos, target_is_directory=True)
-print('🎬 影片寫到：', out_dir, '→', out_dir.resolve())
+# ComfyUI 只當引擎：只聽 127.0.0.1，不對外開介面
+server = subprocess.Popen([sys.executable, 'main.py', '--listen', '127.0.0.1', '--port', '8188',
+                           '--output-directory', str(output_root)],
+                          cwd=str(COMFY), stdout=open('/content/comfyui.log', 'w'), stderr=subprocess.STDOUT)
+wait_http('http://127.0.0.1:8188/system_stats', 'ComfyUI', '/content/comfyui.log')
+print('🎬 影片寫到：', videos)
 # H3 Toybox 的 Colab 設定（保留使用者在網頁設定頁改過的內容，只覆寫這台機器的路徑）
 (COMFY / 'input').mkdir(exist_ok=True)
 cfg_path = DATA / 'config.json'

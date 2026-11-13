@@ -316,14 +316,13 @@ TOYBOX = [
 
 把想象丢进玩具箱，摇一摇就变成视频 🧸 ComfyUI 只在背景当引擎，**不用开 ComfyUI 界面**，所有操作都在 H3 Toybox 网页里。
 
-运行环境选 **L4 24 GB** 或 **A100 40/80 GB**。选择「运行时 → 全部运行」，在第 ③ 格的输出区操作 Toybox。
+运行环境选 **L4 24 GB** 或 **A100 40/80 GB**。选择「运行时 → 全部运行」，然后点击第 ③ 格输出的「打开 H3 Toybox」链接。
 
 | 步骤 | 做什么 |
 |---|---|
 | ① 检查并安装 | 更新 ComfyUI 主分支、安装依赖与视频节点，从 GitHub 拉取 Toybox |
 | ② 下载模型 | 视频约 50 GB，P-H3-Image 另加约 10 GB，H3-Image 另加约 22.15 GB。下载前按所选模型检查磁盘 |
-| ③ 启动并显示网页 | 后台启动 ComfyUI 和 H3 Toybox，在本单元下方内嵌网页；作品默认存到 Google Drive 的「H3Toybox」文件夹 |
-| ③-b | 备用 Cloudflare 链接，默认关闭，可按需手动开启 |
+| ③ 启动并生成链接 | 后台启动 ComfyUI 和 H3 Toybox，再启动 Cloudflare 并显示链接；作品默认存到 Google Drive 的「H3Toybox」文件夹 |
 
 **网页里能做的事**
 - 🖼 **图片**（选用）：文生图，或拿最多 8 张图做编辑（换表情、换衣服、换风格、把人放进场景）。用 [P-H3-Image](https://huggingface.co/PrunaAI/P-H3-Image-Comfy) 挂在同一颗 H3 模型上，只多约 10 GB
@@ -517,14 +516,15 @@ for g in ('VIDEO_PROMPT_WRITING_GUIDE_ref_en.md', 'VIDEO_PROMPT_WRITING_GUIDE_ba
     shutil.copy(str(got), str(GUIDES / g))
 print(f'✅ 下载完成，{(time.time() - t0) / 60:.1f} 分钟')
 """),
-    code("""#@title ③ 启动 ComfyUI 和 H3 Toybox，在下方显示网页
-# 在本单元的输出区操作 Toybox。若内嵌页面无法加载，可使用第 ③-b 格。
+    code("""#@title ③ 启动 ComfyUI 和 H3 Toybox，生成网页链接
+#@markdown **Cloudflare 网页链接**：默认开启，启动后点击输出里的链接。链接没有登录验证，请勿公开分享。取消勾选可用 Colab 内嵌页。
+ENABLE_TUNNEL = True  #@param {type:"boolean"}
 #@markdown **作品存到Google Drive**：素材库、文件夹、生成的视频、生成纪录都放在「我的Google Drive/H3Toybox」，
 #@markdown 断线或不小心关掉运行阶段，重开后再跑一次 ①②③ 东西都还在。第一次会跳出授权窗口，按同意即可。
 SAVE_TO_DRIVE = True  #@param {type:"boolean"}
 #@markdown API 密钥也存到Google Drive（下次不用重贴；但Google Drive里会有一份密钥档）
 SAVE_API_KEYS = False  #@param {type:"boolean"}
-import subprocess, time, urllib.request, json, sys, os, shutil
+import subprocess, time, urllib.request, json, sys, os, shutil, re
 def wait_http(url, name, log, tries=180):
     for i in range(tries):
         try:
@@ -534,7 +534,7 @@ def wait_http(url, name, log, tries=180):
     print(open(log, encoding='utf-8', errors='ignore').read()[-3000:])
     raise RuntimeError(name + ' 没有启动成功，看上面的纪录')
 
-for proc in ('server', 'toybox'):
+for proc in ('tun', 'server', 'toybox'):
     if proc in globals() and globals()[proc].poll() is None:
         globals()[proc].terminate(); globals()[proc].wait()
 # 作品放哪里：Google Drive（授权成功）或这台运行阶段的暂存空间
@@ -604,34 +604,47 @@ toybox = subprocess.Popen([sys.executable, 'server.py'], cwd=str(APP),
                           stdout=open('/content/toybox.log', 'w'), stderr=subprocess.STDOUT)
 wait_http('http://127.0.0.1:8190/api/config', 'H3 Toybox', '/content/toybox.log', tries=30)
 print('📁 作品存放位置：', DATA)
-from google.colab import output
-output.serve_kernel_port_as_iframe(8190, height='900')
-"""),
-    code("""#@title ③-b（备用）通过 Cloudflare 打开 H3 Toybox
-# ⚠️ 网址没有密码，拿到的人都能用你的 GPU —— 不要贴到公开的地方。
-ENABLE_TUNNEL = False  #@param {type:"boolean"}
-if not ENABLE_TUNNEL:
-    print('Cloudflare 通道未开启。请在第 ③ 格的输出区使用 Toybox。')
+if ENABLE_TUNNEL:
+    from IPython.display import Markdown, display
+
+    binary = Path('/content/cloudflared')
+    if not binary.is_file() or not os.access(binary, os.X_OK):
+        partial = binary.with_suffix('.part')
+        try:
+            subprocess.run(['wget', '-q', '--timeout=30', '--tries=2', '-O', str(partial),
+                            'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64'],
+                           check=True)
+            partial.chmod(0o755)
+            partial.replace(binary)
+        finally:
+            partial.unlink(missing_ok=True)
+
+    print('正在生成 Cloudflare 网页链接…')
+    tunnel_log = Path('/content/cloudflared.log')
+    # 写入日志文件，避免后台进程因管道塞满而卡住。
+    with tunnel_log.open('w') as log:
+        tun = subprocess.Popen([str(binary), 'tunnel', '--no-autoupdate', '--url', 'http://127.0.0.1:8190'],
+                               stdout=log, stderr=subprocess.STDOUT)
+    url = None
+    for _ in range(60):
+        if tun.poll() is not None:
+            break
+        match = re.search(r'https://[a-z0-9-]+\\.trycloudflare\\.com', tunnel_log.read_text(errors='replace'))
+        if match:
+            url = match.group(0)
+            break
+        time.sleep(1)
+    if not url:
+        if tun.poll() is None:
+            tun.terminate()
+            tun.wait()
+        print(tunnel_log.read_text(errors='replace')[-2500:])
+        raise RuntimeError('Cloudflare 未能生成链接。Toybox 已启动，请查看上方日志后重跑第 ③ 格。')
+    display(Markdown(f'👉 [打开 H3 Toybox]({url})'))
 else:
-""" + "\n".join("    " + line for line in """import subprocess, re, time
-if not Path('/content/cloudflared').exists():
-    subprocess.run(['wget', '-q', '-O', '/content/cloudflared',
-                    'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64'], check=True)
-    subprocess.run(['chmod', '+x', '/content/cloudflared'], check=True)
-# 通道的输出写进文件，不要接 PIPE：PIPE 没人读会塞满，通道就卡住
-if 'tun' in globals() and tun.poll() is None:
-    tun.terminate(); tun.wait()
-open('/content/cloudflared.log', 'w').close()
-tun = subprocess.Popen(['/content/cloudflared', 'tunnel', '--no-autoupdate', '--url', 'http://127.0.0.1:8190'],
-                       stdout=open('/content/cloudflared.log', 'a'), stderr=subprocess.STDOUT)
-url = None
-for i in range(60):
-    time.sleep(1)
-    m = re.search(r'https://[a-z0-9-]+\\.trycloudflare\\.com', open('/content/cloudflared.log').read())
-    if m:
-        url = m.group(0); break
-print('👉 H3 Toybox：', url or '（没拿到网址，看 /content/cloudflared.log）')
-""".splitlines()) + "\n"),
+    from google.colab import output
+    output.serve_kernel_port_as_iframe(8190, height='900')
+"""),
     code("""#@title 🔍 出问题时跑这格：看 GPU、ComfyUI 与 H3 Toybox 的纪录
 import subprocess
 print(subprocess.run(['nvidia-smi'], capture_output=True, text=True).stdout)

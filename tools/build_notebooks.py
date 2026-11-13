@@ -358,9 +358,9 @@ def colab_secret(name):
     except (userdata.SecretNotFoundError, userdata.NotebookAccessError):
         return ''
 
-repo_url = (REPO_URL.strip() or colab_secret('H3_TOYBOX_REPO').strip()
-            or 'https://github.com/Alex-955/minimax-h3-colab').rstrip('/')
-repo_branch = (REPO_BRANCH.strip() or colab_secret('H3_TOYBOX_BRANCH') or 'main').strip()
+default_repo = 'https://github.com/Alex-955/minimax-h3-colab'
+repo_url = (REPO_URL.strip() or colab_secret('H3_TOYBOX_REPO').strip() or default_repo).rstrip('/')
+repo_branch = REPO_BRANCH.strip() or colab_secret('H3_TOYBOX_BRANCH').strip() or 'main'
 if not re.fullmatch(r'https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo_url):
     raise ValueError('请填写改造版 GitHub 仓库地址，或设置 Colab 密钥 H3_TOYBOX_REPO。地址中请勿放令牌。')
 repo_url = repo_url.removesuffix('.git') + '.git'
@@ -382,33 +382,58 @@ if hf_token:
 else:
     print('未设置 HF_TOKEN，使用匿名下载')
 
-def clone(url, dest, *, branch=None, env=None):
+def clone(url, dest, *, branch=None, env=None, capture_errors=False):
     dest = Path(dest)
     if not dest.exists():
         cmd = ['git', 'clone', '--depth', '1']
         if branch:
             cmd += ['--branch', branch]
-        subprocess.run(cmd + [url, str(dest)], env=env, check=True)
+        cmd += [url, str(dest)]
     else:
         git = ['git', '-C', str(dest)]
         remote = subprocess.check_output(git + ['remote', 'get-url', 'origin'], text=True).strip()
         current = subprocess.check_output(git + ['branch', '--show-current'], text=True).strip()
         if remote.removesuffix('.git') != url.removesuffix('.git') or (branch and current != branch):
             raise RuntimeError(f'{dest} 已检出其他仓库或分支，请在新的 Colab 运行时重试')
-        subprocess.run(git + ['pull', '--ff-only'], env=env, check=True)
+        cmd = git + ['pull', '--ff-only']
+    subprocess.run(cmd, env=env, check=True, text=True, capture_output=capture_errors)
+
+def toybox_clone_error(stderr, has_token):
+    message = stderr.lower()
+    if 'remote branch' in message and 'not found' in message:
+        return f'GitHub 仓库中找不到分支 {repo_branch}，请检查 REPO_BRANCH。'
+    if any(s in message for s in ('repository not found', 'authentication failed', 'invalid username or token',
+                                  'could not read username', '403', '401', 'access denied')):
+        if not has_token:
+            return 'GitHub 未开放读取。若这是私有仓库，请在 Colab 左侧「密钥」添加 GITHUB_TOKEN 并打开笔记本访问权限。'
+        return ('GitHub 拒绝读取仓库。请检查 GITHUB_TOKEN 是否有效，并确认令牌选中了此仓库，'
+                '仓库权限 Contents 为 Read-only。')
+    if any(s in message for s in ('could not resolve host', 'failed to connect', 'connection timed out',
+                                  'connection reset', 'early eof', 'rpc failed')):
+        return 'Colab 连接 GitHub 时中断，请重跑第 ① 格。'
+    return 'Git 未能拉取 Toybox。请检查仓库地址、分支和 Colab 网络后重跑第 ① 格。'
 
 source = Path('/content/minimax-h3-toybox')
 git_env = dict(os.environ, GIT_TERMINAL_PROMPT='0')
-github_token = colab_secret('GITHUB_TOKEN')
-if github_token:
-    # 仅传给这次 Git 调用。远程地址、Git 配置文件和后续进程中都不写入令牌。
-    basic = base64.b64encode(f'x-access-token:{github_token}'.encode()).decode()
-    git_env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
-                   GIT_CONFIG_VALUE_0=f'AUTHORIZATION: basic {basic}')
+github_token = ''
 try:
-    clone(repo_url, source, branch=repo_branch, env=git_env)
+    try:
+        github_token = (userdata.get('GITHUB_TOKEN') or '').strip()
+    except userdata.SecretNotFoundError:
+        pass
+    except userdata.NotebookAccessError:
+        raise RuntimeError('已添加 GITHUB_TOKEN。请在 Colab 左侧「密钥」打开这本笔记本的访问权限。') from None
+    if not github_token and repo_url.removesuffix('.git').lower() == default_repo.lower():
+        raise RuntimeError('请在 Colab 左侧「密钥」添加 GITHUB_TOKEN，打开笔记本访问权限，再运行第 ① 格。')
+    if github_token:
+        # 仅传给这次 Git 调用，避免把令牌写入地址或 Git 配置文件。
+        basic = base64.b64encode(f'x-access-token:{github_token}'.encode()).decode()
+        git_env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
+                       GIT_CONFIG_VALUE_0=f'AUTHORIZATION: basic {basic}')
+    clone(repo_url, source, branch=repo_branch, env=git_env, capture_errors=True)
+    print('已读取 Toybox 源码')
 except subprocess.CalledProcessError as e:
-    raise RuntimeError('拉取 Toybox 失败，请检查仓库地址、分支和私有仓库 GITHUB_TOKEN 的读取权限') from e
+    raise RuntimeError(toybox_clone_error(e.stderr or '', bool(github_token))) from None
 finally:
     del git_env, github_token
     if 'basic' in globals():

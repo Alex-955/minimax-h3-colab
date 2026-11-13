@@ -1,5 +1,5 @@
-# Colab 內建代理會把網址裡的 %2F 解成 /，ComfyUI 的 /userdata/{file} 就配不到 → 工作流清單點開 404。
-# 這個小節點補一條「被拆成兩段」的路由，讀寫同一個使用者資料夾。
+# Colab 内置代理会把网址里的 %2F 解成 /，ComfyUI 的 /userdata/{file} 就配不到 → 工作流清单点开 404。
+# 这个小节点补一条「被拆成两段」的路由，读写同一个用户文件夹。
 import os
 from aiohttp import web
 import folder_paths

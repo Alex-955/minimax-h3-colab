@@ -6,5 +6,6 @@ agent_runs.json
 jobs.json
 stats.json
 config.json
+secrets.json
 __pycache__/
 *.tmp

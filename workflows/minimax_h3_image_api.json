@@ -1,0 +1,68 @@
+{
+  "iu": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "minimax_h3_image_pruned_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "il": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "type": "minimax",
+      "device": "default"
+    }
+  },
+  "iv": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "minimax_h3_image_vae_fp16.safetensors"
+    }
+  },
+  "ienc": {
+    "class_type": "MiniMaxH3ImageConditioning",
+    "inputs": {
+      "clip": ["il", 0],
+      "vae": ["iv", 0],
+      "prompt": "一只橘猫坐在窗边，上午的阳光照亮它的胡须。",
+      "width": 2048,
+      "height": 2048
+    }
+  },
+  "iz": {
+    "class_type": "ConditioningZeroOut",
+    "inputs": {
+      "conditioning": ["ienc", 0]
+    }
+  },
+  "isamp": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["iu", 0],
+      "positive": ["ienc", 0],
+      "negative": ["iz", 0],
+      "latent_image": ["ienc", 1],
+      "seed": 42,
+      "steps": 6,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1.0
+    }
+  },
+  "id": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["isamp", 0],
+      "vae": ["iv", 0]
+    }
+  },
+  "isave": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": ["id", 0],
+      "filename_prefix": "H3Toybox/h3-image"
+    }
+  }
+}

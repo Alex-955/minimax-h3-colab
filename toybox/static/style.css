@@ -15,7 +15,7 @@
   --vid: #ff8a3d;
   --aud: #ff5fa2;
   --danger: #ff3b5c;
-  --font: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+  --font: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   --pop: 0 4px 0 var(--ink);
 }
 * { box-sizing: border-box; }
@@ -282,7 +282,8 @@ fieldset select, fieldset input[type=number], fieldset input[type=text], fieldse
 }
 
 /* top-level entries: 🖼 圖片 / 🎬 影片 / 🤖 短片 Agent */
-.toptabs { display: flex; gap: 8px; margin-bottom: 10px; }
+.toptabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+#h3ImageCustom input { width: 100%; }
 .top { border: 3px solid var(--ink); border-radius: 999px; padding: 6px 16px; background: #fff; font-weight: 900; font-size: 15px; box-shadow: var(--pop); }
 .top.active { background: var(--ink); color: #fff; }
 .top:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }

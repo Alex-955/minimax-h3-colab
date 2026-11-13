@@ -1,7 +1,7 @@
 """H3 Toybox - a cute web frontend for MiniMax H3 on top of a running ComfyUI.
 
 Modes
-  ref     Ref2VA: up to 9 images / 3 videos / 3 audios as references (@圖片1 ...).
+  ref     Ref2VA: up to 9 images / 3 videos / 3 audios as references (@图片1 ...).
           One tray video can be marked "extend": its tail is pinned into the head of the
           new clip (H3 Motion Context) and the result is joined back onto the source.
   frames  I2VA / FL2VA / L2VA: first frame, last frame, or both (MiniMaxH3ImageToVideo).
@@ -15,6 +15,7 @@ import base64
 import copy
 import io
 import json
+import math
 import mimetypes
 import os
 import random
@@ -38,6 +39,7 @@ from PIL import Image, ImageOps
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
 TEMPLATE_PATH = ROOT / "WF.json"
+H3_IMAGE_WORKFLOW = ROOT.parent / "workflows" / "minimax_h3_image_api.json"
 # Everything the user makes lives under DATA (Colab points it at Google Drive so a dropped runtime loses nothing).
 DATA = Path(os.environ.get("H3TOYBOX_DATA") or ROOT)
 LIBRARY = DATA / "library"
@@ -103,7 +105,7 @@ DEFAULT_CONFIG = {
         "temperature": 0.6,
         "max_seconds": 60,
     },
-    # 🖼 圖片 tab: Qwen-Image 2.1 with ComfyUI's own template wiring (TextEncodeQwenImage21 + KSampler, cfg 1)
+    # 🖼 图片 tab: Qwen-Image 2.1 with ComfyUI's own template wiring (TextEncodeQwenImage21 + KSampler, cfg 1)
     "image": {
         # qwen = Qwen-Image 2.1 (desktop); ph3 = P-H3-Image, a LoRA on the H3 model (Colab: +10 GB instead of +20 GB)
         "engine": "qwen",
@@ -123,16 +125,19 @@ DEFAULT_CONFIG = {
         "spec_t2i": str(ROOT / "guides" / "qwen_image_2.1_t2i_spec.txt"),
         "spec_edit": str(ROOT / "guides" / "qwen_image_2.1_edit_spec.txt"),
     },
+    "h3_image": {"installed": True},
 }
 # long side of a generated picture, per size button
 IMAGE_SIZES = {"1K": 1024, "1.3K": 1344, "1.6K": 1664, "2K": 2048, "2.7K": 2720}  # P-H3 is best at 2K+
+H3_IMAGE_SIZES = {"1K": 1024, "2K": 2048, "4K": 4096}
+H3_IMAGE_MAX_REFS = 16
 
 # Node ids in WF.json that the server rewires
 N_COND, N_SAMPLER, N_SCHED, N_SHIFT, N_BRIDGE = "265", "397", "261", "333", "402"
 N_VAE, N_AVAE, N_CLIP, N_LEN, N_SECONDS = "36", "37", "38", "250", "259"
 N_DECODE, N_ADECODE = "253", "254"
 PREVIEW_ONLY = ("401", "329", "364", "51", "252")  # ChunkFeedForward + preview override + VHS + sample inputs
-N_IMG_ENC, N_IMG_SAMPLER, N_IMG_SAVE = "ienc", "isamp", "isave"  # node ids of the 🖼 圖片 graph
+N_IMG_ENC, N_IMG_SAMPLER, N_IMG_SAVE = "ienc", "isamp", "isave"  # node ids of the 🖼 图片 graph
 
 SYSTEM_REF = (
     "You enhance prompts for reference-conditioned video and audio generation (Ref2VA). "
@@ -150,21 +155,23 @@ SYSTEM_BASE = (
 )
 LABEL = {"image": "Picture", "video": "Video", "audio": "Audio"}
 CHINESE_NAME = {"image": "图片", "video": "视频", "audio": "音频"}
-# @圖片1 / @影片1 / @音訊1, plus H3Easy-style @Image1 / @Video1 / @Audio1
+# @图片1 / @视频1 / @音频1, plus H3Easy-style @Image1 / @Video1 / @Audio1
 MENTION_RE = re.compile(r"@(圖片|图片|Image|影片|视频|Video|音訊|音频|Audio)\s?(\d+)", re.IGNORECASE)
 MENTION_KIND = {"圖片": "image", "图片": "image", "image": "image", "影片": "video", "视频": "video",
-                "video": "video", "音訊": "audio", "音频": "audio", "audio": "audio"}
+                "video": "video", "音频": "audio", "音频": "audio", "audio": "audio"}
 ASPECTS = {"16:9": (16, 9), "9:16": (9, 16), "1:1": (1, 1), "4:3": (4, 3), "3:4": (3, 4), "21:9": (21, 9)}
+H3_IMAGE_ASPECTS = {**ASPECTS, "3:2": (3, 2), "2:3": (2, 3), "9:21": (9, 21), "3:1": (3, 1), "1:3": (1, 3)}
 VISION = "<|vision_start|><|image_pad|><|vision_end|>"
 # Display names follow the T8 enhancer's docs/directional-skills.md
 SKILL_NAMES = {
-    "wushu_combat": "Jojocodex-武術打鬥", "high_density_combat": "土豆-高密度連續攻防",
-    "continuous_combat": "Fisher-連續戰鬥長鏡頭", "cinematic_gunfight": "兔子-電影槍戰導演",
-    "ning_wenwu": "寧版-文武雙全", "drama_scene": "戲劇場面｜關係與潛台詞",
-    "situational_drama": "情境戲劇｜處境與鋪墊回收", "zhenzhen_pov": "貞貞-POV劇情導演",
+    "wushu_combat": "Jojocodex-武术打斗", "high_density_combat": "土豆-高密度连续攻防",
+    "continuous_combat": "Fisher-连续战斗长镜头", "cinematic_gunfight": "兔子-电影枪战导演",
+    "ning_wenwu": "宁版-文武双全", "drama_scene": "戏剧场面｜关系与潜台词",
+    "situational_drama": "情境戏剧｜处境与铺垫回收", "zhenzhen_pov": "贞贞-POV剧情导演",
 }
 
 lock = threading.Lock()
+IMAGE_LIBRARY_LOCK = threading.Lock()
 
 
 def load_json(path, default):
@@ -266,7 +273,7 @@ def queue_prompt(cfg, wf):
     try:
         return comfy(cfg, "/prompt", {"prompt": wf, "client_id": MONITOR.client_id})["prompt_id"]
     except urllib.error.HTTPError as e:
-        raise RuntimeError("ComfyUI 拒絕了工作流：" + e.read().decode("utf-8", "replace")[:2000])
+        raise RuntimeError("ComfyUI 拒绝了工作流：" + e.read().decode("utf-8", "replace")[:2000])
 
 
 def history_entry(cfg, prompt_id):
@@ -282,14 +289,14 @@ def wait_prompt(cfg, prompt_id, timeout=1800):
                 raise RuntimeError(execution_error(entry))
             return entry
         time.sleep(1.0)
-    raise RuntimeError("等待 ComfyUI 逾時")
+    raise RuntimeError("等待 ComfyUI 逾时")
 
 
 def execution_error(entry):
     for name, msg in entry["status"].get("messages", []):
         if name == "execution_error":
             return f"{msg.get('node_type')}: {msg.get('exception_message', '').strip()}"
-    return "ComfyUI 執行失敗"
+    return "ComfyUI 运行失败"
 
 
 def comfy_download(cfg, fileinfo, dest):
@@ -552,21 +559,23 @@ def last_frame(path):
         for f in c.decode(stream):
             frame = f
     if frame is None:
-        raise ValueError("讀不到延伸影片的最後一格")
+        raise ValueError("读不到延伸视频的最后一格")
     return frame.to_image()
 
 
-def add_asset(cfg, filename, body, folder=None):
+def add_asset(cfg, filename, body, folder=None, *, from_job=None):
     ext = Path(filename).suffix.lower()
     kind = "image" if ext in IMAGE_EXT else "video" if ext in VIDEO_EXT else "audio" if ext in AUDIO_EXT else None
     if kind is None:
-        raise ValueError(f"不支援的檔案格式：{ext}")
+        raise ValueError(f"不支持的文件格式：{ext}")
     asset_id = uuid.uuid4().hex[:10]
     LIBRARY.mkdir(exist_ok=True)
     stored = LIBRARY / f"{asset_id}{ext}"
     stored.write_bytes(body)
     item = {"id": asset_id, "name": Path(filename).name, "kind": kind, "file": stored.name,
             "comfy_name": f"h3fe_{asset_id}{ext}", "created": time.time(), "folder": folder or None}
+    if from_job is not None:
+        item["from_job"] = from_job
     thumb = LIBRARY / f"{asset_id}_thumb.jpg"
     if kind == "image":
         with Image.open(stored) as im:
@@ -595,24 +604,20 @@ def add_asset(cfg, filename, body, folder=None):
 def add_output_to_library(cfg, job_id, folder=None):
     job = next((j for j in load_json(JOBS_PATH, []) if j["id"] == job_id), None)
     if not job or job.get("status") != "done":
-        raise ValueError("這個工作還沒有完成的影片")
+        raise ValueError("这个任务还没有完成的作品")
     if job.get("image"):
-        # 🎬 變成影片 and ＋加入素材庫 on the same picture must not stack up copies in the library
-        known = next((i for i in library_index() if i.get("from_job") == job_id), None)
-        if known:
-            return known
-        tmp = OUTPUTS / f"_lib_{job_id}.png"
-        comfy_download(cfg, job["image"], tmp)
-        body = tmp.read_bytes()
-        tmp.unlink(missing_ok=True)
-        item = add_asset(cfg, job["image"]["filename"], body, folder)
-        with lock:
-            index = library_index()
-            for i in index:
-                if i["id"] == item["id"]:
-                    i["from_job"] = job_id
-            save_json(LIBRARY / "library.json", index)
-        return dict(item, from_job=job_id)
+        # 🎬 变成视频 and ＋加入素材库 on the same picture must not stack up copies in the library
+        with IMAGE_LIBRARY_LOCK:
+            known = next((i for i in library_index() if i.get("from_job") == job_id), None)
+            if known:
+                return known
+            tmp = OUTPUTS / f"_lib_{uuid.uuid4().hex}.png"
+            try:
+                comfy_download(cfg, job["image"], tmp)
+                item = add_asset(cfg, job["image"]["filename"], tmp.read_bytes(), folder, from_job=job_id)
+            finally:
+                tmp.unlink(missing_ok=True)
+            return item
     if job.get("full_video"):
         body, name = (OUTPUTS / job["full_video"]).read_bytes(), job["full_video"]
     else:
@@ -644,7 +649,7 @@ def folder_action(b):
         folders = load_json(FOLDERS_PATH, [])
         act = b.get("action")
         if act == "create":
-            name = (b.get("name") or "").strip() or "新資料夾"
+            name = (b.get("name") or "").strip() or "新文件夹"
             folders.append({"id": uuid.uuid4().hex[:8], "name": name[:40], "created": time.time()})
         elif act == "rename":
             for f in folders:
@@ -658,7 +663,7 @@ def folder_action(b):
                     item["folder"] = None
             save_json(LIBRARY / "library.json", index)
         else:
-            raise ValueError("未知的資料夾動作")
+            raise ValueError("未知的文件夹动作")
         save_json(FOLDERS_PATH, folders)
         return folders
 
@@ -666,7 +671,7 @@ def folder_action(b):
 def move_assets(ids, folder):
     with lock:
         if folder and folder not in {f["id"] for f in load_json(FOLDERS_PATH, [])}:
-            raise ValueError("資料夾不存在")
+            raise ValueError("文件夹不存在")
         index = library_index()
         for item in index:
             if item["id"] in ids:
@@ -680,12 +685,12 @@ def move_assets(ids, folder):
 def asset(asset_id):
     item = next((i for i in library_index() if i["id"] == asset_id), None)
     if item is None:
-        raise ValueError("素材已經不在素材庫裡了")
+        raise ValueError("素材已经不在素材库里了")
     return item
 
 
 def resolve_mentions(text, tray):
-    """Map @圖片N mentions (N = position among tray items of that kind) to compact H3 tags.
+    """Map @图片N mentions (N = position among tray items of that kind) to compact H3 tags.
 
     The extension source video is not a reference, so it is skipped when numbering.
     Only mentioned assets are used, numbered by first mention, like H3Easy's per-segment binding.
@@ -705,7 +710,7 @@ def resolve_mentions(text, tray):
         n = int(m.group(2))
         pool = by_kind[kind]
         if not 1 <= n <= len(pool):
-            raise ValueError(f"找不到參考素材 {m.group(0)}")
+            raise ValueError(f"找不到参考素材 {m.group(0)}")
         key = (kind, n)
         if key not in assigned:
             chosen[kind].append(pool[n - 1])
@@ -721,12 +726,12 @@ def extend_source(req):
         return None
     marked = [t for t in req.get("tray", []) if t.get("extend")]
     if len(marked) > 1:
-        raise ValueError("一次只能標記一支影片作為延伸")
+        raise ValueError("一次只能标记一支视频作为延伸")
     if not marked:
         return None
     item = asset(marked[0]["id"])
     if item["kind"] != "video":
-        raise ValueError("只有影片可以標記為延伸")
+        raise ValueError("只有视频可以标记为延伸")
     return item
 
 
@@ -736,7 +741,7 @@ def extend_last_frame(cfg, src):
     path = Path(cfg["comfy_input_dir"]) / name
     if not path.exists():
         last_frame(LIBRARY / src["file"]).convert("RGB").save(path, quality=95)
-    return {"id": f"last_{src['id']}", "name": "延伸來源最後一格", "kind": "image", "comfy_name": name,
+    return {"id": f"last_{src['id']}", "name": "延伸来源最后一格", "kind": "image", "comfy_name": name,
             "path": str(path), "extend_frame": True}
 
 
@@ -753,12 +758,12 @@ def collect(cfg, req, text):
     if mode == "frames":
         first, last = req.get("first_id"), req.get("last_id")
         if not first and not last:
-            raise ValueError("頭尾格模式至少要放一張首格或尾格")
+            raise ValueError("首尾帧模式至少要放一张首帧或尾帧")
         for asset_id in (first, last):
             if asset_id:
                 item = asset(asset_id)
                 if item["kind"] != "image":
-                    raise ValueError("首格與尾格必須是圖片")
+                    raise ValueError("首帧与尾帧必须是图片")
                 chosen["image"].append(item)
         task = "FL2VA" if first and last else "I2VA" if first else "L2VA"
         return text, chosen, task, None
@@ -786,7 +791,7 @@ def skill_text(cfg, skill_id):
         return ""
     path = Path(cfg["skills_dir"]) / skill_id / "SKILL.md"
     if path.parent.parent != Path(cfg["skills_dir"]) or not path.is_file():
-        raise ValueError(f"找不到導演 Skill：{skill_id}")
+        raise ValueError(f"找不到导演 Skill：{skill_id}")
     return re.sub(r"^---\n.*?\n---\n", "", path.read_text(encoding="utf-8"), flags=re.S).strip()
 
 
@@ -1001,7 +1006,7 @@ def http_json(url, payload=None, headers=None, timeout=600, retries=2):
             pass
         raise RuntimeError(f"HTTP {e.code}：{str(detail)[:600]}")
     except urllib.error.URLError as e:
-        raise RuntimeError(f"連不上端點：{e.reason}")
+        raise RuntimeError(f"连不上端点：{e.reason}")
 
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
@@ -1009,7 +1014,7 @@ GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
 def rewrite_gemini(gm, rw, system, parts, max_tokens=None):
     if not gm.get("api_key"):
-        raise ValueError("還沒有填 Gemini API 金鑰")
+        raise ValueError("还没有填 Gemini API 密钥")
     model = (gm.get("model") or "gemini-3.8-flash").strip()
     contents = [{"text": p} if kind == "text" else {"inline_data": {"mime_type": "image/jpeg", "data": jpeg_b64(p)}}
                 for kind, p in parts]
@@ -1023,13 +1028,13 @@ def rewrite_gemini(gm, rw, system, parts, max_tokens=None):
     try:
         return "".join(p.get("text", "") for p in out["candidates"][0]["content"]["parts"] if not p.get("thought")).strip()
     except (KeyError, IndexError):
-        raise RuntimeError("Gemini 沒有回傳內容：" + json.dumps(out, ensure_ascii=False)[:400])
+        raise RuntimeError("Gemini 没有回传内容：" + json.dumps(out, ensure_ascii=False)[:400])
 
 
 def openai_url(base):
     base = (base or "").strip().rstrip("/")
     if not base:
-        raise ValueError("還沒有填 OpenAI 相容端點網址")
+        raise ValueError("还没有填 OpenAI 兼容端点网址")
     return base if base.endswith("/chat/completions") else base + "/chat/completions"
 
 
@@ -1045,7 +1050,7 @@ def rewrite_openai(oa, rw, system, parts, max_tokens=None):
     try:
         text = out["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
-        raise RuntimeError("端點沒有回傳內容：" + json.dumps(out, ensure_ascii=False)[:400])
+        raise RuntimeError("端点没有回传内容：" + json.dumps(out, ensure_ascii=False)[:400])
     if isinstance(text, list):
         text = "".join(c.get("text", "") for c in text)
     return re.sub(r"<think>.*?</think>", "", text or "", flags=re.S).strip()
@@ -1076,13 +1081,13 @@ def rewrite(cfg, req):
 
 
 def test_rewriter(cfg, body):
-    """Settings' 驗證 button: a tiny POST to the chosen endpoint, plus its model list when it offers one.
+    """Settings' 验证 button: a tiny POST to the chosen endpoint, plus its model list when it offers one.
 
     An empty api_key in the form means "keep the stored key" (the browser never receives stored keys).
     """
     provider = body.get("provider")
     if provider not in ("gemini", "openai"):
-        raise ValueError("本地小模型不需要驗證")
+        raise ValueError("本地小模型不需要验证")
     conf = dict(cfg["rewriter"].get(provider, {}))
     conf.update({k: v for k, v in (body.get("conf") or {}).items() if v not in ("", None)})
     rw = dict(cfg["rewriter"], temperature=0.2, top_p=0.9)
@@ -1133,7 +1138,7 @@ def ffmpeg_exe():
         import imageio_ffmpeg
         return imageio_ffmpeg.get_ffmpeg_exe()
     except ImportError:
-        raise RuntimeError("找不到 ffmpeg：延伸影片需要 ffmpeg")
+        raise RuntimeError("找不到 ffmpeg：延伸视频需要 ffmpeg")
 
 
 def conform(src_path, dest, width, height, has_audio, tail=None):
@@ -1303,8 +1308,31 @@ def image_dims(aspect, size_key, refs):
     return round32(w), round32(h)
 
 
-def image_refs(req, text):
-    """Reference pictures for Qwen and the prompt with @圖片N turned into Qwen's own tags.
+def h3_image_dims(req, refs):
+    size = req.get("image_size", "2K")
+    aspect = req.get("aspect", "auto")
+    if size == "custom":
+        w, h = req.get("width"), req.get("height")
+        if any(type(edge) is not int or not 32 <= edge <= 8192 or edge % 32 for edge in (w, h)):
+            raise ValueError("宽和高须为 32 到 8192 之间的整数，且为 32 的倍数")
+        if not 655_360 <= w * h <= 20_000_000 or max(w, h) > min(w, h) * 3:
+            raise ValueError("自定义尺寸须在 65.536 万至 2000 万像素之间，宽高比须在 1:3 到 3:1 之间")
+        return w, h
+    if size not in H3_IMAGE_SIZES or (aspect != "auto" and aspect not in H3_IMAGE_ASPECTS):
+        raise ValueError("请选择有效的图片尺寸和比例")
+    if aspect == "auto":
+        first = refs[0] if refs else {}
+        a, b = first.get("width") or 1, first.get("height") or 1
+        ratio = min(3, max(1 / 3, a / b))
+    else:
+        a, b = H3_IMAGE_ASPECTS[aspect]
+        ratio = a / b
+    side = H3_IMAGE_SIZES[size]
+    return round32(side * math.sqrt(ratio)), round32(side / math.sqrt(ratio))
+
+
+def image_refs(cfg, req, text, h3_image=False):
+    """Reference pictures for Qwen and the prompt with @图片N turned into Qwen's own tags.
 
     Qwen's official edit spec: with two or more inputs the prompt must name them <image1>, <image2> ...;
     with a single input it must not tag it at all. Without any @ mention every tray picture is used, in order."""
@@ -1315,11 +1343,15 @@ def image_refs(req, text):
         refs = chosen["image"]
     else:
         tagged, refs = text, [index[t["id"]] for t in tray]
+    if h3_image:
+        if len(refs) > H3_IMAGE_MAX_REFS:
+            raise ValueError(f"H3-Image 最多支持 {H3_IMAGE_MAX_REFS} 张参考图")
+        return tagged, refs
     if len(refs) > 9:
-        raise ValueError("參考圖最多 9 張")
-    if ph3_mode(load_config()):  # P-H3 reads <Picture N> itself, up to 8 pictures (image_1 = the one edited)
+        raise ValueError("参考图最多 9 张")
+    if ph3_mode(cfg):  # P-H3 reads <Picture N> itself, up to 8 pictures (image_1 = the one edited)
         if len(refs) > 8:
-            raise ValueError("P-H3 編輯最多 8 張圖（第 1 張是要改的那張）")
+            raise ValueError("P-H3 编辑最多 8 张图（第 1 张是要改的那张）")
         return tagged, refs
     if len(refs) == 1:
         word = "图片" if re.search(r"[㐀-鿿]", tagged) else "the image"
@@ -1331,6 +1363,18 @@ def image_refs(req, text):
 
 def ph3_mode(cfg):
     return cfg["image"].get("engine", "qwen") == "ph3"
+
+
+def h3_image_graph(prompt, w, h, refs, seed):
+    graph = json.loads(H3_IMAGE_WORKFLOW.read_text(encoding="utf-8"))
+    conditioning = graph[N_IMG_ENC]["inputs"]
+    conditioning.update(prompt=prompt, width=w, height=h)
+    graph[N_IMG_SAMPLER]["inputs"]["seed"] = seed
+    for i, item in enumerate(refs, 1):
+        node = f"ir{i}"
+        graph[node] = {"class_type": "LoadImage", "inputs": {"image": item["comfy_name"]}}
+        conditioning[f"images.image_{i}"] = [node, 0]
+    return graph
 
 
 def ph3_graph(cfg, prompt, w, h, refs, seed):
@@ -1393,7 +1437,7 @@ def check_image_wiring(entry, refs):
         link = enc.get("inputs", {}).get(f"images.image_{i}")
         src = ran.get(link[0], {}) if isinstance(link, list) else {}
         if src.get("class_type") != "LoadImage" or src.get("inputs", {}).get("image") != item["comfy_name"]:
-            return f"參考圖第 {i} 張沒有接進 {enc.get('class_type', '編碼節點')} 的 images.image_{i}"
+            return f"参考图第 {i} 张没有接进 {enc.get('class_type', '编码节点')} 的 images.image_{i}"
     return None
 
 
@@ -1403,7 +1447,7 @@ def rewrite_image_prompt(cfg, tagged, refs):
     rw = cfg["rewriter"]
     provider = rw.get("provider", "local")
     if provider not in ("gemini", "openai"):
-        raise ValueError("圖片的提示詞改寫要用 Gemini 或 OpenAI 端點（本地 9B 是影片專用的改寫模型）")
+        raise ValueError("图片的提示词改写要用 Gemini 或 OpenAI 端点（本地 9B 是视频专用的改写模型）")
     spec = Path(cfg["image"]["ph3"]["spec"] if ph3_mode(cfg) else cfg["image"]["spec_edit" if refs else "spec_t2i"]
                 ).read_text(encoding="utf-8")
     system = spec + "\n\nReturn only the final rewritten prompt, nothing else."
@@ -1428,21 +1472,33 @@ def rewrite_image_prompt(cfg, tagged, refs):
 
 def generate_image(cfg, req):
     if not req.get("prompt", "").strip():
-        raise ValueError("請先寫一段描述喔")
-    if not cfg["image"].get("installed", True):  # Colab: the picture models are an optional download
-        raise ValueError("這台還沒有安裝生圖模型：回到 Colab 第 ② 格勾選「INSTALL_IMAGE」再執行一次，然後重跑 ③")
-    tagged, refs = image_refs(req, req["prompt"])
-    final_text = req.get("final_prompt") or tagged
-    w, h = image_dims(req.get("aspect", "auto"), req.get("image_size", "1.3K"), refs)
+        raise ValueError("请先写一段描述喔")
+    h3_image = req.get("mode") == "h3_image"
+    if h3_image and not cfg["h3_image"]["installed"]:
+        raise ValueError("H3-Image 权重未就绪。请在 Colab 第 ② 格勾选 INSTALL_H3_IMAGE，运行后重跑第 ③ 格")
+    if not h3_image and not cfg["image"].get("installed", True):
+        raise ValueError("这台还没有安装生图模型：回到 Colab 第 ② 格勾选「INSTALL_IMAGE」再运行一次，然后重跑 ③")
+    tagged, refs = image_refs(cfg, req, req["prompt"], h3_image=h3_image)
+    final_text = tagged if h3_image else req.get("final_prompt") or tagged
+    size = req.get("image_size", "2K" if h3_image else "1.3K")
     seed = req.get("seed")
+    if h3_image and seed is not None and (type(seed) is not int or not -1 <= seed < 2**64):
+        raise ValueError("随机种子应为非负整数，留空或填 -1 表示随机")
     seed = int(seed) if seed not in (None, "", -1) else random.randint(0, 2**48)
-    prompt_id = queue_prompt(cfg, image_graph(cfg, final_text, w, h, refs, seed))
+    if h3_image:
+        w, h = h3_image_dims(req, refs)
+        engine = "h3_image"
+        graph = h3_image_graph(final_text, w, h, refs, seed)
+    else:
+        w, h = image_dims(req.get("aspect", "auto"), size, refs)
+        engine = cfg["image"].get("engine", "qwen")
+        graph = image_graph(cfg, final_text, w, h, refs, seed)
+    prompt_id = queue_prompt(cfg, graph)
     job = {"id": prompt_id, "created": time.time(), "status": "queued", "mode": "image",
            "task": "Edit" if refs else "T2I", "prompt": req["prompt"], "final_prompt": final_text, "seed": seed,
-           "aspect": req.get("aspect", "auto"), "image_size": req.get("image_size", "1.3K"), "width": w, "height": h,
+           "aspect": req.get("aspect", "auto"), "image_size": size, "width": w, "height": h,
            "tray": req.get("tray", []), "refs": [r["comfy_name"] for r in refs],
-           "engine": cfg["image"].get("engine", "qwen"),
-           "steps": 8 if ph3_mode(cfg) else int(cfg["image"]["steps"])}
+           "engine": engine, "steps": graph[N_IMG_SAMPLER]["inputs"].get("steps", 8)}
     with lock:
         jobs = load_json(JOBS_PATH, [])
         jobs.insert(0, job)
@@ -1551,9 +1607,11 @@ def _refresh_jobs(cfg):
                     job.update(status="error", error=execution_error(entry))
                     continue
                 miswired = check_image_wiring(entry, [{"comfy_name": n} for n in job.get("refs", [])])
-                job.update(image=saved_image(entry), finished=time.time(), status="done")
-                if miswired:
-                    job.update(status="error", error=miswired)
+                image = saved_image(entry)
+                if miswired or not image:
+                    job.update(status="error", error=miswired or "ComfyUI 未返回保存的图片")
+                else:
+                    job.update(image=image, finished=time.time(), status="done")
                 continue
             if entry:
                 st = MONITOR.snapshot(job["id"])
@@ -1591,7 +1649,7 @@ def join_worker(cfg, job):
     try:
         update = {"status": "done", "full_video": finish_extend(cfg, job)}
     except Exception as e:
-        update = {"status": "done", "join_error": f"接回原片失敗：{e}"}
+        update = {"status": "done", "join_error": f"接回原片失败：{e}"}
     with lock:
         jobs = load_json(JOBS_PATH, [])
         for j in jobs:
@@ -1604,38 +1662,38 @@ def join_worker(cfg, job):
 # The T8 pattern for small models: ONE compact structured call writes the whole short as a contract,
 # everything mechanical (durations, reference labels, line budget, chaining) is checked and derived locally,
 # and only a failed check goes back to the model, once, with the exact problems listed.
-# Each segment then runs through the ordinary 🧸 參考 path (9B rewriter → Ref2VA) and is chained onto the
+# Each segment then runs through the ordinary 🧸 参考 path (9B rewriter → Ref2VA) and is chained onto the
 # previous one with H3 Motion Context, so the last segment's full video is the whole short.
 
 AGENT_PATH = DATA / "agent_runs.json"
 AGENT_CPS = 4.0  # spoken characters per second a segment can carry
-AGENT_SYSTEM = """你是短片導演。使用者給你幾張參考圖（標籤：{labels}）和一句指示，你要規劃一支 {total} 秒的短片，
-分成 {n} 段；每段是一次影片生成（4 到 15 秒），段與段會直接接在一起播放。
+AGENT_SYSTEM = """你是短片导演。用户给你几张参考图（标签：{labels}）和一句指示，你要规划一支 {total} 秒的短片，
+分成 {n} 段；每段是一次视频生成（4 到 15 秒），段与段会直接接在一起播放。
 
-只輸出一個 JSON 物件，不要任何說明：
+只输出一个 JSON 对象，不要任何说明：
 {{"title": "片名",
-  "logline": "一句話說完整個故事",
-  "bible": {{"characters": [{{"ref": "圖片1", "name": "名字", "look": "外觀與服裝，一句"}}],
-            "location": "主要場景、時間與光線，一句",
-            "style": "影像風格，一句"}},
+  "logline": "一句话说完整个故事",
+  "bible": {{"characters": [{{"ref": "图片1", "name": "名字", "look": "外观与服装，一句"}}],
+            "location": "主要场景、时间与光线，一句",
+            "style": "影像风格，一句"}},
   "segments": [{{"seconds": 10,
-                "refs": ["圖片1"],
-                "action": "這一段畫面裡實際發生的事：誰在畫面哪一側、做了什麼具體動作、鏡頭怎麼帶",
-                "dialogue": [{{"who": "名字", "line": "台詞"}}],
-                "sound": "環境聲與音效",
-                "end_state": "這一段最後一刻的畫面：每個人在哪、什麼姿勢、手上拿著什麼"}}]}}
+                "refs": ["图片1"],
+                "action": "这一段画面里实际发生的事：谁在画面哪一侧、做了什么具体动作、镜头怎么带",
+                "dialogue": [{{"who": "名字", "line": "台词"}}],
+                "sound": "环境声与音效",
+                "end_state": "这一段最后一刻的画面：每个人在哪、什么姿势、手上拿着什么"}}]}}
 
-規則：
-- 一段只做一件事；第 k 段從第 k-1 段的 end_state 開始，因果要接得上，最後一段要有收尾。
-- 每段的台詞總字數不超過「秒數×4」；可以沒有台詞（dialogue 給空陣列）。
-- refs 只能用上面列出的標籤；角色出現在哪一段，那一段的 refs 就要有他的圖。
-- 所有段的 seconds 加起來必須等於 {total}。
-- 寫看得見、拍得出來的東西，不寫心理活動。"""
-AGENT_REVISE = """下面是目前這支短片的規劃 JSON。使用者想修改：{message}
+规则：
+- 一段只做一件事；第 k 段从第 k-1 段的 end_state 开始，因果要接得上，最后一段要有收尾。
+- 每段的台词总字数不超过「秒数×4」；可以没有台词（dialogue 给空数组）。
+- refs 只能用上面列出的标签；角色出现在哪一段，那一段的 refs 就要有他的图。
+- 所有段的 seconds 加起来必须等于 {total}。
+- 写看得见、拍得出来的东西，不写心理活动。"""
+AGENT_REVISE = """下面是目前这支短片的规划 JSON。用户想修改：{message}
 
-只改使用者要求的部分，其他段落一字不動；輸出修改後的完整 JSON（同樣格式、同樣的總秒數 {total}）。
+只改用户要求的部分，其他段落一字不动；输出修改后的完整 JSON（同样格式、同样的总秒数 {total}）。
 
-目前的規劃：
+目前的规划：
 {plan}"""
 AGENT_LOCK = threading.Lock()
 REFRESH_LOCK = threading.Lock()
@@ -1702,46 +1760,52 @@ def check_contract(plan, labels, total):
     errors, fixes = [], []
     segs = plan.get("segments") if isinstance(plan, dict) else None
     if not isinstance(segs, list) or not segs:
-        return plan, ["沒有 segments 陣列"], fixes
+        return plan, ["没有 segments 数组"], fixes
+    bible = plan.get("bible")
+    characters = (bible.get("characters") or []) if isinstance(bible, dict) else []
+    for character in characters:
+        if isinstance(character, dict) and isinstance(character.get("ref"), str):
+            character["ref"] = re.sub(r"^圖片(?=\d+$)", "图片", character["ref"])
     for k, seg in enumerate(segs, 1):
         if not isinstance(seg, dict):
-            errors.append(f"第 {k} 段不是物件")
+            errors.append(f"第 {k} 段不是对象")
             continue
         try:
             sec = float(seg.get("seconds", 0))
         except (TypeError, ValueError):
             sec = 0
         if not 4 <= sec <= 15:
-            fixes.append(f"第 {k} 段 {sec:g} 秒 → 夾到 4–15")
+            fixes.append(f"第 {k} 段 {sec:g} 秒 → 夹到 4–15")
             sec = min(15.0, max(4.0, sec or 8.0))
         seg["seconds"] = sec
-        bad = [r for r in seg.get("refs") or [] if r not in labels]
+        refs = [re.sub(r"^圖片(?=\d+$)", "图片", r) if isinstance(r, str) else r for r in seg.get("refs") or []]
+        bad = [r for r in refs if r not in labels]
         if bad:
-            errors.append(f"第 {k} 段的 refs 用了不存在的標籤 {bad}（只能用 {labels}）")
-        seg["refs"] = [r for r in seg.get("refs") or [] if r in labels]
+            errors.append(f"第 {k} 段的 refs 用了不存在的标签 {bad}（只能用 {labels}）")
+        seg["refs"] = [r for r in refs if r in labels]
         if len(str(seg.get("action", ""))) < 15:
-            errors.append(f"第 {k} 段的 action 太短，要寫出看得見的具體動作與鏡頭")
+            errors.append(f"第 {k} 段的 action 太短，要写出看得见的具体动作与镜头")
         if not str(seg.get("end_state", "")).strip():
-            errors.append(f"第 {k} 段缺 end_state（下一段要從這裡接）")
+            errors.append(f"第 {k} 段缺 end_state（下一段要从这里接）")
         n_chars = len(re.sub(r"[\s，。！？、,.!?…「」\"']", "", spoken(seg)))
         if n_chars > sec * AGENT_CPS * 1.25:
-            errors.append(f"第 {k} 段台詞 {n_chars} 字，{sec:g} 秒最多約 {int(sec * AGENT_CPS)} 字：刪短或拆段")
+            errors.append(f"第 {k} 段台词 {n_chars} 字，{sec:g} 秒最多约 {int(sec * AGENT_CPS)} 字：删短或拆段")
     secs = [s["seconds"] for s in segs if isinstance(s, dict)]
     if secs and abs(sum(secs) - total) > 0.5:  # rescale, then let the last segment absorb rounding
         scale = total / sum(secs)
         for s in segs[:-1]:
             s["seconds"] = float(min(15, max(4, round(s["seconds"] * scale))))
         segs[-1]["seconds"] = float(min(15, max(4, total - sum(s["seconds"] for s in segs[:-1]))))
-        fixes.append(f"總秒數 {sum(secs):g} → 依比例調成 {sum(s['seconds'] for s in segs):g}")
+        fixes.append(f"总秒数 {sum(secs):g} → 依比例调成 {sum(s['seconds'] for s in segs):g}")
     return plan, errors, fixes
 
 
 def agent_plan(cfg, run, revise=None):
     """One planning call (+ at most one correction call). Returns the checked plan."""
-    labels = [f"圖片{i}" for i in range(1, len(run["images"]) + 1)]
+    labels = [f"图片{i}" for i in range(1, len(run["images"]) + 1)]
     total = int(run["total"])
     n = max(1, -(-total // 15))  # ceil(total / 15): fewest segments that fit, each ≤ 15 s
-    system = AGENT_SYSTEM.format(labels="、".join(labels) or "（沒有參考圖）", total=total, n=n)
+    system = AGENT_SYSTEM.format(labels="、".join(labels) or "（没有参考图）", total=total, n=n)
     parts = []
     for label, aid in zip(labels, run["images"]):
         with Image.open(media_path(asset(aid))) as im:
@@ -1756,11 +1820,11 @@ def agent_plan(cfg, run, revise=None):
     t0 = time.time()
     raw = agent_chat(cfg, system, parts)
     plan = parse_contract(raw)
-    errors = ["輸出不是合法的 JSON"] if plan is None else check_contract(plan, labels, total)[1]
+    errors = ["输出不是合法的 JSON"] if plan is None else check_contract(plan, labels, total)[1]
     rounds = 1
     if errors:  # one correction round with the exact problems, like T8's correction_messages
-        agent_log(run["id"], "契約檢查沒過，送回修正：" + "；".join(errors))
-        fix = parts + [("text", "你上一版的輸出：\n" + raw[:6000] + "\n\n有這些問題，只修正它們，輸出完整 JSON：\n- "
+        agent_log(run["id"], "契约检查没过，送回修正：" + "；".join(errors))
+        fix = parts + [("text", "你上一版的输出：\n" + raw[:6000] + "\n\n有这些问题，只修正它们，输出完整 JSON：\n- "
                         + "\n- ".join(errors))]
         raw2 = agent_chat(cfg, system, fix)
         plan2 = parse_contract(raw2)
@@ -1768,14 +1832,14 @@ def agent_plan(cfg, run, revise=None):
         if plan2 is not None:
             plan, raw = plan2, raw2
     if plan is None:
-        raise RuntimeError("規劃模型沒有給出合法的 JSON：" + raw[:300])
+        raise RuntimeError("规划模型没有给出合法的 JSON：" + raw[:300])
     plan, errors, fixes = check_contract(plan, labels, total)
     return plan, {"seconds": round(time.time() - t0, 1), "rounds": rounds, "errors": errors, "fixes": fixes}
 
 
 def segment_prompt(plan, k):
-    """A 🧸 參考 prompt for segment k: bible facts the segment needs, then what happens, all in plain Chinese
-    with @圖片N tags. The 9B rewriter turns it into the official Ref2VA prompt."""
+    """A 🧸 参考 prompt for segment k: bible facts the segment needs, then what happens, all in plain Chinese
+    with @图片N tags. The 9B rewriter turns it into the official Ref2VA prompt."""
     seg, bible = plan["segments"][k], plan.get("bible") or {}
     refs = seg.get("refs") or []
     lines = [x for x in (bible.get("style"), bible.get("location")) if x]
@@ -1786,16 +1850,16 @@ def segment_prompt(plan, k):
             used.add(c["ref"])
     for r in refs:
         if r not in used:
-            lines.append(f"參考 @{r}")
+            lines.append(f"参考 @{r}")
     if k > 0:
-        lines.append("緊接上一段的最後一刻：" + str(plan["segments"][k - 1].get("end_state", "")))
+        lines.append("紧接上一段的最后一刻：" + str(plan["segments"][k - 1].get("end_state", "")))
     lines.append(str(seg.get("action", "")))
     for d in seg.get("dialogue") or []:
         if isinstance(d, dict) and d.get("line"):
-            lines.append(f"{d.get('who', '')}說：「{d['line']}」")
+            lines.append(f"{d.get('who', '')}说：「{d['line']}」")
     if seg.get("sound"):
-        lines.append("聲音：" + str(seg["sound"]))
-    lines.append("這一段結束在：" + str(seg.get("end_state", "")))
+        lines.append("声音：" + str(seg["sound"]))
+    lines.append("这一段结束在：" + str(seg.get("end_state", "")))
     return "\n".join(lines)
 
 
@@ -1805,9 +1869,9 @@ def wait_job(cfg, job_id, run_id):
             raise RuntimeError("已停止")
         job = next((j for j in refresh_jobs(cfg) if j["id"] == job_id), None)
         if job is None:
-            raise RuntimeError("工作不見了（被移除了？）")
+            raise RuntimeError("工作不见了（被移除了？）")
         if job["status"] == "error":
-            raise RuntimeError(job.get("error") or "生成失敗")
+            raise RuntimeError(job.get("error") or "生成失败")
         if job["status"] == "done":
             return job
         time.sleep(4)
@@ -1829,10 +1893,10 @@ def agent_worker(cfg, run_id, start=0, revise=None):
                     olds = old.get("segments") or []
                     while start < min(len(olds), len(plan["segments"])) and olds[start] == plan["segments"][start]:
                         start += 1
-                agent_log(run_id, f"修改：{revise} → 從第 {start + 1} 段開始重做")
+                agent_log(run_id, f"修改：{revise} → 从第 {start + 1} 段开始重做")
             segs = (run.get("segments") or [])[:start] + [{"status": "waiting"} for _ in plan["segments"][start:]]
             run = agent_update(run_id, plan=plan, plan_meta=meta, segments=segs, status="generating", final=None)
-            agent_log(run_id, f"規劃完成（{meta['seconds']} 秒，{meta['rounds']} 輪）" +
+            agent_log(run_id, f"规划完成（{meta['seconds']} 秒，{meta['rounds']} 轮）" +
                       (f"；仍有提醒：{'；'.join(meta['errors'])}" if meta["errors"] else ""))
         plan = run["plan"]
         prev_asset = run["segments"][start - 1].get("asset") if start > 0 else None
@@ -1873,10 +1937,10 @@ def agent_runs_get(run_id):
 def agent_start(cfg, b):
     images = [i for i in b.get("images", []) if asset(i)["kind"] == "image"]
     if not b.get("instruction", "").strip():
-        raise ValueError("請寫一句你想要的短片")
+        raise ValueError("请写一句你想要的短片")
     total = int(b.get("total", 30))
     if not 8 <= total <= int(cfg["agent"]["max_seconds"]):
-        raise ValueError(f"短片長度要在 8 到 {cfg['agent']['max_seconds']} 秒之間")
+        raise ValueError(f"短片长度要在 8 到 {cfg['agent']['max_seconds']} 秒之间")
     run_id = uuid.uuid4().hex[:10]
     folder = folder_action({"action": "create", "name": "🤖 " + b["instruction"][:12]})[-1]["id"]
     run = {"id": run_id, "created": time.time(), "status": "queued", "instruction": b["instruction"], "images": images,
@@ -1895,9 +1959,9 @@ def agent_start(cfg, b):
 def agent_revise(cfg, b):
     run = agent_runs_get(b["id"])
     if run["status"] in ("planning", "generating"):
-        raise ValueError("這支短片還在做，等它好了再改（或先停止）")
+        raise ValueError("这支短片还在做，等它好了再改（或先停止）")
     if not run.get("plan"):
-        raise ValueError("還沒有規劃可以改")
+        raise ValueError("还没有规划可以改")
     threading.Thread(target=agent_worker, args=(cfg, run["id"]), kwargs={"revise": b["message"]}, daemon=True).start()
     return agent_update(run["id"], status="planning")
 
@@ -1956,6 +2020,8 @@ class Handler(BaseHTTPRequestHandler):
                          for k, v in wf.items() if v["class_type"] == "LoraLoaderModelOnly"]
                 stats = load_json(STATS_PATH, DEFAULT_STATS)
                 return self.send_json({"config": public_config(cfg), "skills": load_skills(cfg), "aspects": list(ASPECTS), "image_sizes": list(IMAGE_SIZES),
+                                       "h3_image": {"installed": cfg["h3_image"]["installed"], "sizes": list(H3_IMAGE_SIZES),
+                                                    "aspects": list(H3_IMAGE_ASPECTS), "max_refs": H3_IMAGE_MAX_REFS},
                                        "lora_nodes": loras, "rewrite_seconds": stats["rewrite"]})
             if url.path == "/api/models":
                 info = comfy(cfg, "/object_info/CLIPLoader")
@@ -1999,15 +2065,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(test_rewriter(cfg, self.body_json()))
             if url.path == "/api/rewrite":
                 b = self.body_json()
+                if b.get("mode") == "h3_image":
+                    raise ValueError("H3-Image 使用原始提示词")
                 if b.get("mode") == "image":
                     t0 = time.time()
-                    tagged, refs = image_refs(b, b.get("prompt", ""))
+                    tagged, refs = image_refs(cfg, b, b.get("prompt", ""))
                     return self.send_json({"prompt": rewrite_image_prompt(cfg, tagged, refs), "task": "Edit" if refs else "T2I",
                                            "seconds_used": round(time.time() - t0, 1)})
                 return self.send_json(rewrite(cfg, b))
             if url.path == "/api/generate":
                 b = self.body_json()
-                return self.send_json(generate_image(cfg, b) if b.get("mode") == "image" else generate(cfg, b))
+                return self.send_json(generate_image(cfg, b) if b.get("mode") in ("image", "h3_image") else generate(cfg, b))
             if url.path == "/api/agent/start":
                 return self.send_json(agent_start(cfg, self.body_json()))
             if url.path == "/api/agent/revise":
@@ -2026,7 +2094,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"ok": True})
             self.send_error(404)
         except subprocess.CalledProcessError as e:
-            self.send_json({"error": "ffmpeg 失敗：" + (e.stderr or b"").decode("utf-8", "replace")[-800:]}, 400)
+            self.send_json({"error": "ffmpeg 失败：" + (e.stderr or b"").decode("utf-8", "replace")[-800:]}, 400)
         except (ValueError, RuntimeError, KeyError) as e:
             self.send_json({"error": str(e)}, 400)
         except Exception as e:

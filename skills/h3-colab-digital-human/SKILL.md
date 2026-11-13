@@ -1,57 +1,57 @@
 ---
 name: h3-colab-digital-human
-description: 用一張人物照＋一句中文需求，自動在使用者已開好的 Colab（或本機）ComfyUI 上生成 MiniMax H3 會說話的數字人影片。當使用者說「做數字人」「讓照片裡的人說話」「H3 生成影片」「幫我用 Colab 生成」並提供 trycloudflare 網址或 ComfyUI 網址時使用。需要能執行本機 PowerShell（或 Python）的桌面版 AI。
+description: 用一张人物照＋一句中文需求，自动在用户已开好的 Colab（或本机）ComfyUI 上生成 MiniMax H3 会说话的数字人视频。当用户说「做数字人」「让照片里的人说话」「H3 生成视频」「帮我用 Colab 生成」并提供 trycloudflare 网址或 ComfyUI 网址时使用。需要能运行本机 PowerShell（或 Python）的桌面版 AI。
 ---
 
-# H3 數字人：一張照片＋一句話 → 會說話的影片
+# H3 数字人：一张照片＋一句话 → 会说话的视频
 
-## 使用者要先做的事（AI 做不到，請提醒）
-1. 從 <https://github.com/dseditor/minimax-h3-colab> 開啟 `H3_Basic_ComfyUI.ipynb`（或 `H3_Digital_Human.ipynb`），執行階段選 **L4**。
-2. 依序執行 **①、②、③-b、④**，把 ③-b 印出來的 `https://….trycloudflare.com` 網址交給你。
-   （③ 的 Colab 內建代理只有使用者本人的瀏覽器打得開，AI 用不了，一定要用 ③-b。）
-3. 給你：**人物照的檔案路徑**、**一句中文需求**（說什麼、什麼語氣、幾秒；沒給秒數就用 10 秒）。
+## 用户要先做的事（AI 做不到，请提醒）
+1. 从 <https://github.com/dseditor/minimax-h3-colab> 打开 `H3_Basic_ComfyUI.ipynb`（或 `H3_Digital_Human.ipynb`），运行阶段选 **L4**。
+2. 依序运行 **①、②、③-b、④**，把 ③-b 印出来的 `https://….trycloudflare.com` 网址交给你。
+   （③ 的 Colab 内置代理只有用户本人的浏览器打得开，AI 用不了，一定要用 ③-b。）
+3. 给你：**人物照的文件路径**、**一句中文需求**（说什么、什么语气、几秒；没给秒数就用 10 秒）。
 
-網址等於 GPU 鑰匙：只在這次對話使用，不要寫進任何公開的檔案。
+网址等于 GPU 钥匙：只在这次对话使用，不要写进任何公开的文件。
 
 ## 你要做的事
 
-### 1. 先測連線
+### 1. 先测连接
 ```powershell
-powershell -ExecutionPolicy Bypass -File "<skill>/scripts/h3_colab.ps1" -Url <網址> -Check
+powershell -ExecutionPolicy Bypass -File "<skill>/scripts/h3_colab.ps1" -Url <网址> -Check
 ```
-`[FAIL]` 就停下來，請使用者確認 Colab 的 ② 與 ③-b 還在執行（執行階段沒有中斷）、網址沒貼錯。
-（沒有 PowerShell 的環境改用 `python <skill>/scripts/h3_colab.py --url <網址> --check`，參數相同。）
+`[FAIL]` 就停下来，请用户确认 Colab 的 ② 与 ③-b 还在运行（运行阶段没有中断）、网址没贴错。
+（没有 PowerShell 的环境改用 `python <skill>/scripts/h3_colab.py --url <网址> --check`，参数相同。）
 
-### 2. 看照片，寫提示詞
-- **打開照片親眼看過再寫。** 這個模型參考力偏弱：提示詞描述的人物、服裝、場景只要跟照片對不上，模型就不看參考圖，直接照文字生成。
-- 用 Ref2VA 格式，**完整規則在 MiniMax 官方指南 `ref-en.txt`，寫之前先讀**。照片就是 `<Picture 1>`：
-  - 已安裝官方 `h3-prompt-writing` skill 的話，直接讀它的 `references/ref-en.txt`。
-  - 沒有的話下載（固定版本）存到本 skill 的 `references/`：
+### 2. 看照片，写提示词
+- **打开照片亲眼看过再写。** 这个模型参考力偏弱：提示词描述的人物、服装、场景只要跟照片对不上，模型就不看参考图，直接照文本生成。
+- 用 Ref2VA 格式，**完整规则在 MiniMax 官方指南 `ref-en.txt`，写之前先读**。照片就是 `<Picture 1>`：
+  - 已安装官方 `h3-prompt-writing` skill 的话，直接读它的 `references/ref-en.txt`。
+  - 没有的话下载（固定版本）存到本 skill 的 `references/`：
     `https://raw.githubusercontent.com/MiniMax-AI/MiniMax-H3/d21241f0a4b3acbb34c97dae47fa417b7065e438/.claude/skills/h3-prompt-writing/references/ref-en.txt`
-  - `<Subject 1>` ＝照片裡的人（髮型、髮飾、服裝、配件照實寫），`<Subject 2>` ＝照片裡的場景。
-  - 照片裡沒有的東西不要給 Subject 標籤，也盡量不要加道具：道具寫越多，模型越容易變出奇怪的東西。
-- 數字人的固定寫法：
-  - 單一鏡頭、中近景、構圖貼近照片，鏡頭幾乎不動（頂多很慢地推近）。
-  - 台詞放進 `<d>[Chinese] …</d>`，**保留使用者給的中文原文**，說話者標 `(S1)`。
-  - **台詞長度：每秒約 4～5 個中文字**（10 秒約 40～45 字）。太長句尾會糊，太短可以補一個自然的手勢或表情。
-  - 寫明「她是畫面中唯一的人、唯一的聲音；畫面乾淨，沒有任何文字或字幕」。
-  - 全文 300～500 個英文字。
-- 寫好存成 UTF-8 的 `prompt.txt`，先把台詞那一句貼給使用者確認，對了再送出。
+  - `<Subject 1>` ＝照片里的人（发型、发饰、服装、配件照实写），`<Subject 2>` ＝照片里的场景。
+  - 照片里没有的东西不要给 Subject 标签，也尽量不要加道具：道具写越多，模型越容易变出奇怪的东西。
+- 数字人的固定写法：
+  - 单一镜头、中近景、构图贴近照片，镜头几乎不动（顶多很慢地推近）。
+  - 台词放进 `<d>[Chinese] …</d>`，**保留用户给的中文原文**，说话者标 `(S1)`。
+  - **台词长度：每秒约 4～5 个中文本**（10 秒约 40～45 字）。太长句尾会糊，太短可以补一个自然的手势或表情。
+  - 写明「她是画面中唯一的人、唯一的声音；画面干净，没有任何文本或字幕」。
+  - 全文 300～500 个英文本。
+- 写好存成 UTF-8 的 `prompt.txt`，先把台词那一句贴给用户确认，对了再送出。
 
-### 3. 生成並下載
+### 3. 生成并下载
 ```powershell
-powershell -ExecutionPolicy Bypass -File "<skill>/scripts/h3_colab.ps1" -Url <網址> -Image <照片> -PromptFile prompt.txt -Seconds 10 -Out <輸出.mp4>
+powershell -ExecutionPolicy Bypass -File "<skill>/scripts/h3_colab.ps1" -Url <网址> -Image <照片> -PromptFile prompt.txt -Seconds 10 -Out <输出.mp4>
 ```
-- 秒數 5～15，預設解析度 0.4MP，seed 預設隨機（`-Seed` 可固定）。
-- L4 生成 10 秒大約 4 分鐘；腳本每 10 秒回報一次進度，跑完印出 `[DONE]` 與檔案位置。
-- 失敗時腳本會印出 ComfyUI 的錯誤內容，照實轉告使用者，不要自行猜測原因。
+- 秒数 5～15，缺省分辨率 0.4MP，seed 缺省随机（`-Seed` 可固定）。
+- L4 生成 10 秒大约 4 分钟；脚本每 10 秒回报一次进度，跑完印出 `[DONE]` 与文件位置。
+- 失败时脚本会印出 ComfyUI 的错误内容，照实转告用户，不要自行猜测原因。
 
 ### 4. 交付
-告訴使用者影片路徑，並請他看三件事：臉和衣服像不像照片、嘴型對不對、有沒有多出字幕或第二個人。
-不像照片時，先回頭對照片檢查提示詞的人物描述，不要急著換 seed 重抽。
+告诉用户视频路径，并请他看三件事：脸和衣服像不像照片、嘴型对不对、有没有多出字幕或第二个人。
+不像照片时，先回头对照片检查提示词的人物描述，不要急着换 seed 重抽。
 
-## 檔案
-- `assets/workflow_api.json`：ComfyUI API 格式工作流（PRISM 融合 int8 模型、6 步、全原生節點），腳本只會改提示詞、圖片、秒數、解析度、seed 五個值。
-- `references/`：放 MiniMax 官方提示詞指南（不隨本 repo 散布，來源與版本見 `references/H3_NOTICE.md`）。
-- `scripts/h3_colab.ps1`：Windows PowerShell 5.1／7 都能跑，上傳和下載用 Windows 內建的 `curl.exe`。
-- `scripts/h3_colab.py`：同功能的 Python 版（只用標準函式庫）。
+## 文件
+- `assets/workflow_api.json`：ComfyUI API 格式工作流（PRISM 融合 int8 模型、6 步、全原生节点），脚本只会改提示词、图片、秒数、分辨率、seed 五个值。
+- `references/`：放 MiniMax 官方提示词指南（不随本 repo 散布，来源与版本见 `references/H3_NOTICE.md`）。
+- `scripts/h3_colab.ps1`：Windows PowerShell 5.1／7 都能跑，上传和下载用 Windows 内置的 `curl.exe`。
+- `scripts/h3_colab.py`：同功能的 Python 版（只用标准函数库）。

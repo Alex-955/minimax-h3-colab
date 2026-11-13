@@ -4,17 +4,15 @@
 
 | 笔记本 | 用途 | 打开 |
 |---|---|---|
-| **H3_Basic_ComfyUI** | 基础学习：装好 ComfyUI＋H3 模型组，**不带工作流**，自己拉节点 | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/dseditor/minimax-h3-colab/blob/main/H3_Basic_ComfyUI.ipynb) |
-| **H3_Digital_Human** | 数字人：一张人物照＋一段提示词 → 会说话的视频；也可以交给桌面版 AI 用 skill 生成 | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/dseditor/minimax-h3-colab/blob/main/H3_Digital_Human.ipynb) |
-| **minimax_h3_image_colab** | Toybox 网页、原有视频与 P-H3-Image、独立 H3-Image 4K 生图 | [私有仓库运行说明](#在-colab-运行私有仓库版本) |
+| **H3_Basic_ComfyUI** | 基础学习：装好 ComfyUI＋H3 模型组，**不带工作流**，自己拉节点 | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Alex-955/minimax-h3-colab/blob/main/H3_Basic_ComfyUI.ipynb) |
+| **H3_Digital_Human** | 数字人：一张人物照＋一段提示词 → 会说话的视频；也可以交给桌面版 AI 用 skill 生成 | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Alex-955/minimax-h3-colab/blob/main/H3_Digital_Human.ipynb) |
+| **minimax_h3_image_colab** | Toybox 网页、原有视频与 P-H3-Image、独立 H3-Image 4K 生图 | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Alex-955/minimax-h3-colab/blob/main/minimax_h3_image_colab.ipynb) |
 | **H3_Toybox** | 与增强版入口使用同一份启动逻辑 | [H3_Toybox.ipynb](H3_Toybox.ipynb) |
 
-## 在 Colab 运行私有仓库版本
+## 在 Colab 运行
 
-1. 将本项目推送到自己的 GitHub 私有仓库。在 Colab 选择「文件 → 打开笔记本 → GitHub」，勾选「包含私有仓库」并授权，打开 `minimax_h3_image_colab.ipynb`。也可把本地的同名笔记本上传到 Colab。
-2. 笔记本默认从 `Alex-955/minimax-h3-colab` 的 `main` 分支读取源码。使用其他仓库时，可在第 ① 格填写 `REPO_URL` 和 `REPO_BRANCH`，或在 Colab「密钥」里设置 `H3_TOYBOX_REPO` 和 `H3_TOYBOX_BRANCH`。
-3. 给私有仓库创建一个仅对该仓库开放 **Contents: Read-only** 的 GitHub fine-grained token。在 Colab「密钥」添加 `GITHUB_TOKEN` 并允许笔记本访问。打开 GitHub 笔记本的授权与运行时拉取源码的凭据各有用途。[GitHub 令牌说明](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
-4. 选 L4 24 GB 或 A100 40/80 GB，再点「运行时 → 全部运行」。首次使用 Drive 时按 Colab 提示授权，打开第 ③ 格给出的 Toybox 链接。
+1. 用上方的按钮打开 `minimax_h3_image_colab.ipynb`。
+2. 选择 L4 24 GB 或 A100 40/80 GB，再点「运行时 → 全部运行」。首次使用 Google Drive 时按提示授权，然后打开第 ③ 格的 Toybox 链接。
 
 第 ② 格的 `INSTALL_H3_IMAGE` 默认开启。它从 [Comfy-Org/MiniMax-H3-Image](https://huggingface.co/Comfy-Org/MiniMax-H3-Image/tree/main) 下载 INT8 扩散权重和 FP16 图片 VAE（约 **22.15 GB**），放到 `ComfyUI/models/diffusion_models/` 和 `ComfyUI/models/vae/`。视频与 H3-Image 共用 `text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors`。已有完整文件会跳过，勾选 `USE_DRIVE_CACHE` 可沿用 `MyDrive/H3_models`。默认全选约需 83.20 GB 权重空间，下载单元会按实际文件检查剩余磁盘。
 

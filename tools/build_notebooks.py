@@ -316,11 +316,11 @@ TOYBOX = [
 
 把想象丢进玩具箱，摇一摇就变成视频 🧸 ComfyUI 只在背景当引擎，**不用开 ComfyUI 界面**，所有操作都在 H3 Toybox 网页里。
 
-运行环境选 **L4 24 GB** 或 **A100 40/80 GB**。首次配置源码地址和密钥后，选择「运行时 → 全部运行」，再打开第 ③ 格的 Toybox 链接。
+运行环境选 **L4 24 GB** 或 **A100 40/80 GB**。选择「运行时 → 全部运行」，再打开第 ③ 格的 Toybox 链接。
 
 | 步骤 | 做什么 |
 |---|---|
-| ① 检查并安装 | 更新 ComfyUI 主分支、安装依赖与视频节点，从指定仓库拉取 Toybox |
+| ① 检查并安装 | 更新 ComfyUI 主分支、安装依赖与视频节点，从 GitHub 拉取 Toybox |
 | ② 下载模型 | 视频约 50 GB，P-H3-Image 另加约 10 GB，H3-Image 另加约 22.15 GB。下载前按所选模型检查磁盘 |
 | ③ 启动＋开网页 | 背景启动 ComfyUI 与 H3 Toybox，用 Colab 内置代理开网页；作品默认存到Google Drive「H3Toybox」文件夹 |
 | ③-b | 备用 Cloudflare 链接，默认关闭，可按需手动开启 |
@@ -338,32 +338,16 @@ TOYBOX = [
 - 📁 **素材库文件夹**：把图片、视频、声音拖进文件夹整理
 - 每支视频都会显示目前做到哪一步、还要多久
 
-**源码仓库**：默认使用 `Alex-955/minimax-h3-colab` 的 `main` 分支。使用其他仓库时，可在第 ① 格填写地址和分支，或在 Colab「密钥」添加 `H3_TOYBOX_REPO` 和 `H3_TOYBOX_BRANCH`。私有仓库需要 `GITHUB_TOKEN`（对该仓库的 Contents 只读权限）。打开相应密钥的「笔记本访问权」。
-
-**Hugging Face 令牌（可选）**：在同一处添加只读 `HF_TOKEN`。
+**Hugging Face 令牌（可选）**：可以在 Colab 左侧「密钥」添加只读 `HF_TOKEN`。
 
 模型：`Minimax-h3_Singularity_x_10Eros-Max_PRISM`（int8）＋官方 Qwen3-VL 文本编码器与 VAE；LoRA、语义桥、潜空间放大器与改写模型镜像在 [dseditor/minimax-h3-studio-assets](https://huggingface.co/dseditor/minimax-h3-studio-assets)（各档来源见该页）。授权依照各来源模型。
 
 L4 的 4K 和多图任务取决于可用显存与主机内存。可先用 1K 或 2K 确认运行环境。"""),
     code("""#@title ① 检查环境＋安装 ComfyUI、节点与 H3 Toybox（GPU 或驱动不符就停下，不会安装）
-REPO_URL = ''  #@param {type:"string"}
-REPO_BRANCH = ''  #@param {type:"string"}
-import base64, os, re, shutil, subprocess, sys, torch
+import os, shutil, subprocess, sys, torch
 from pathlib import Path
 from google.colab import userdata
 
-def colab_secret(name):
-    try:
-        return userdata.get(name) or ''
-    except (userdata.SecretNotFoundError, userdata.NotebookAccessError):
-        return ''
-
-default_repo = 'https://github.com/Alex-955/minimax-h3-colab'
-repo_url = (REPO_URL.strip() or colab_secret('H3_TOYBOX_REPO').strip() or default_repo).rstrip('/')
-repo_branch = REPO_BRANCH.strip() or colab_secret('H3_TOYBOX_BRANCH').strip() or 'main'
-if not re.fullmatch(r'https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo_url):
-    raise ValueError('请填写改造版 GitHub 仓库地址，或设置 Colab 密钥 H3_TOYBOX_REPO。地址中请勿放令牌。')
-repo_url = repo_url.removesuffix('.git') + '.git'
 if not torch.cuda.is_available():
     raise RuntimeError('没有 GPU：请到「运行阶段 → 变更运行阶段类型」选 L4 GPU，再重跑这格')
 cap = torch.cuda.get_device_capability(0)
@@ -375,14 +359,17 @@ if cap < (8, 0):
 if int(drv.split('.')[0]) < 580:
     raise RuntimeError(f'驱动 {drv} 不支持 CUDA 13（需要 580 以上），没有安装任何东西。请换一台运行阶段（L4）再试。')
 print('✅ 环境检查通过，开始安装')
-hf_token = colab_secret('HF_TOKEN')
+try:
+    hf_token = (userdata.get('HF_TOKEN') or '').strip()
+except (userdata.SecretNotFoundError, userdata.NotebookAccessError):
+    hf_token = ''
 if hf_token:
     os.environ['HF_TOKEN'] = hf_token
     print('已读取 HF_TOKEN')
 else:
     print('未设置 HF_TOKEN，使用匿名下载')
 
-def clone(url, dest, *, branch=None, env=None, capture_errors=False):
+def clone(url, dest, *, branch=None):
     dest = Path(dest)
     if not dest.exists():
         cmd = ['git', 'clone', '--depth', '1']
@@ -396,48 +383,11 @@ def clone(url, dest, *, branch=None, env=None, capture_errors=False):
         if remote.removesuffix('.git') != url.removesuffix('.git') or (branch and current != branch):
             raise RuntimeError(f'{dest} 已检出其他仓库或分支，请在新的 Colab 运行时重试')
         cmd = git + ['pull', '--ff-only']
-    subprocess.run(cmd, env=env, check=True, text=True, capture_output=capture_errors)
-
-def toybox_clone_error(stderr, has_token):
-    message = stderr.lower()
-    if 'remote branch' in message and 'not found' in message:
-        return f'GitHub 仓库中找不到分支 {repo_branch}，请检查 REPO_BRANCH。'
-    if any(s in message for s in ('repository not found', 'authentication failed', 'invalid username or token',
-                                  'could not read username', '403', '401', 'access denied')):
-        if not has_token:
-            return 'GitHub 未开放读取。若这是私有仓库，请在 Colab 左侧「密钥」添加 GITHUB_TOKEN 并打开笔记本访问权限。'
-        return ('GitHub 拒绝读取仓库。请检查 GITHUB_TOKEN 是否有效，并确认令牌选中了此仓库，'
-                '仓库权限 Contents 为 Read-only。')
-    if any(s in message for s in ('could not resolve host', 'failed to connect', 'connection timed out',
-                                  'connection reset', 'early eof', 'rpc failed')):
-        return 'Colab 连接 GitHub 时中断，请重跑第 ① 格。'
-    return 'Git 未能拉取 Toybox。请检查仓库地址、分支和 Colab 网络后重跑第 ① 格。'
+    subprocess.run(cmd, env=dict(os.environ, GIT_TERMINAL_PROMPT='0'), check=True)
 
 source = Path('/content/minimax-h3-toybox')
-git_env = dict(os.environ, GIT_TERMINAL_PROMPT='0')
-github_token = ''
-try:
-    try:
-        github_token = (userdata.get('GITHUB_TOKEN') or '').strip()
-    except userdata.SecretNotFoundError:
-        pass
-    except userdata.NotebookAccessError:
-        raise RuntimeError('已添加 GITHUB_TOKEN。请在 Colab 左侧「密钥」打开这本笔记本的访问权限。') from None
-    if not github_token and repo_url.removesuffix('.git').lower() == default_repo.lower():
-        raise RuntimeError('请在 Colab 左侧「密钥」添加 GITHUB_TOKEN，打开笔记本访问权限，再运行第 ① 格。')
-    if github_token:
-        # 仅传给这次 Git 调用，避免把令牌写入地址或 Git 配置文件。
-        basic = base64.b64encode(f'x-access-token:{github_token}'.encode()).decode()
-        git_env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
-                       GIT_CONFIG_VALUE_0=f'AUTHORIZATION: basic {basic}')
-    clone(repo_url, source, branch=repo_branch, env=git_env, capture_errors=True)
-    print('已读取 Toybox 源码')
-except subprocess.CalledProcessError as e:
-    raise RuntimeError(toybox_clone_error(e.stderr or '', bool(github_token))) from None
-finally:
-    del git_env, github_token
-    if 'basic' in globals():
-        del basic
+clone('https://github.com/Alex-955/minimax-h3-colab.git', source, branch='main')
+print('已读取 Toybox 源码')
 APP = source / 'toybox'
 if not (APP / 'server.py').is_file() or not (source / 'workflows/minimax_h3_image_api.json').is_file():
     raise RuntimeError('该分支缺少改造版 Toybox 或 H3-Image 工作流，请检查是否已推送代码')

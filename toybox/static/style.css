@@ -175,6 +175,7 @@ mark.m-image { background: #22b57340; } mark.m-video { background: #ff8a3d40; } 
 .rewrite-box .open-hint { margin-left: auto; color: var(--muted); font-size: 12px; }
 .rewrite-box[open] .open-hint { display: none; }
 .rewrite-box textarea { width: 100%; min-height: 280px; resize: vertical; border: none; border-radius: 0 0 13px 13px; padding: 12px 14px; font: 12.5px/1.6 Consolas, var(--font); background: #fffdf6; }
+.h3-draft-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 8px; padding: 0 12px 12px; }
 .badge { font-size: 11px; padding: 1px 9px; border-radius: 999px; border: 2px solid var(--ink); font-weight: 800; }
 .badge.warn { background: var(--yellow); }
 

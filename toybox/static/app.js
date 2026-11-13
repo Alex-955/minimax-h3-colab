@@ -404,6 +404,11 @@ function requestBody() {
 const signature = () => { const b = requestBody(); return JSON.stringify([b.mode, b.prompt, b.tray, b.first_id, b.last_id, b.mode === "image" ? 0 : b.seconds, b.skill]); };
 
 function markStale() {
+  if (state.mode === "h3_image" && !$("#h3DraftBox").hidden) {
+    const stale = state.h3DraftSignature !== signature();
+    $("#h3DraftStale").hidden = !stale;
+    $("#btnApplyH3Draft").disabled = stale || state.busy || !$("#h3DraftText").value.trim();
+  }
   if ($("#rewriteBox").hidden) return;
   $("#rewriteStale").hidden = state.rewriteSig === signature();
 }
@@ -412,7 +417,9 @@ function setBusy(busy, label) {
   state.busy = busy;
   $("#btnGenerate").disabled = busy || (state.mode === "h3_image" && !state.config?.h3_image?.installed);
   $("#btnRewrite").disabled = busy || $("#useRewrite").disabled;
+  $("#btnH3Draft").disabled = busy;
   $("#btnGenerate").textContent = busy ? label : isImageMode(state.mode) ? "🖼 生成图片" : "🎬 生成视频";
+  markStale();
 }
 
 function validate() {
@@ -467,6 +474,28 @@ async function doRewrite() {
     rewriteTimer(false);
     setBusy(false);
     $("#btnRewrite").textContent = "改写预览";
+  }
+}
+
+async function writeH3Draft() {
+  const body = validate();
+  const provider = state.config?.config?.rewriter?.provider;
+  if (provider !== "gemini" && provider !== "openai") {
+    throw new Error("请在设置的「提示词改写」中选择并配置 Gemini 或 OpenAI 兼容端点");
+  }
+  const sig = signature();
+  setBusy(true, "写草稿中…");
+  $("#btnH3Draft").textContent = "写草稿中…";
+  try {
+    const result = await api("api/rewrite", body);
+    state.h3DraftSignature = sig;
+    $("#h3DraftText").value = result.prompt;
+    $("#h3DraftBox").open = true;
+    updateH3ImageControls();
+    markStale();
+  } finally {
+    $("#btnH3Draft").textContent = "AI 帮我写";
+    setBusy(false);
   }
 }
 
@@ -729,10 +758,12 @@ function updateH3ImageControls() {
   $("#h3ImageCustom").hidden = !custom;
   $("#rewriteToggle").hidden = active;
   $("#btnRewrite").hidden = active;
+  $("#btnH3Draft").hidden = !active;
+  $("#h3DraftBox").hidden = !active || !state.h3DraftSignature;
   $("#h3ImageStatus").hidden = !active;
   if (active) {
     $("#h3ImageStatus").textContent = state.config?.h3_image?.installed
-      ? "直接使用原始提示词"
+      ? "AI 写草稿时会把描述和所用参考图发给设置中的改写服务。"
       : "权重未就绪，请检查 Colab 第 ② 格的 INSTALL_H3_IMAGE。";
   }
 }
@@ -1007,6 +1038,17 @@ function bind() {
   $("#seconds").addEventListener("input", e => { $("#secondsVal").textContent = e.target.value; markStale(); });
   $("#skill").addEventListener("change", markStale);
   $("#btnRewrite").addEventListener("click", () => doRewrite().catch(e => toast(e.message, true)));
+  $("#btnH3Draft").addEventListener("click", () => writeH3Draft().catch(e => toast(e.message, true)));
+  $("#h3DraftText").addEventListener("input", markStale);
+  $("#btnApplyH3Draft").addEventListener("click", () => {
+    if (state.busy || state.h3DraftSignature !== signature()) return;
+    $("#prompt").value = $("#h3DraftText").value;
+    state.h3DraftSignature = null;
+    updateH3ImageControls();
+    renderHighlight();
+    $("#prompt").focus();
+    toast("已填入提示词，可以继续编辑");
+  });
   $("#btnGenerate").addEventListener("click", doGenerate);
   $("#btnAgent").addEventListener("click", () => startAgent().catch(e => toast(e.message, true)));
   $("#agentSeconds").addEventListener("input", e => ($("#agentSecondsVal").textContent = e.target.value));

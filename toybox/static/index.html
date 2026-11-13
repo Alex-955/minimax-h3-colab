@@ -156,6 +156,7 @@
       <span id="h3ImageStatus" class="hint" role="status" hidden></span>
       <div class="actions">
         <button id="btnRewrite" class="pill">改写预览</button>
+        <button id="btnH3Draft" class="pill mint" type="button" hidden>AI 帮我写</button>
         <button id="btnGenerate" class="pill big blue">🎬 生成视频</button>
       </div>
     </div>
@@ -168,6 +169,14 @@
         <span class="open-hint">点开查看・修改</span>
       </summary>
       <textarea id="rewriteText" spellcheck="false"></textarea>
+    </details>
+    <details id="h3DraftBox" class="rewrite-box" hidden>
+      <summary>AI 提示词草稿</summary>
+      <textarea id="h3DraftText" aria-label="AI 提示词草稿" spellcheck="false"></textarea>
+      <div class="h3-draft-actions">
+        <span id="h3DraftStale" class="hint" hidden>原描述或参考图已改动，请重新生成草稿。</span>
+        <button id="btnApplyH3Draft" class="pill small blue" type="button">采用草稿</button>
+      </div>
     </details>
   </section>
 

@@ -1441,22 +1441,33 @@ def check_image_wiring(entry, refs):
     return None
 
 
-def rewrite_image_prompt(cfg, tagged, refs):
+def rewrite_image_prompt(cfg, tagged, refs, *, h3_image=False):
     """Optional: rewrite with Qwen-Image's official rewriter spec (remote providers only; the local 9B is
     trained for H3 video prompts, not pictures). The spec answers in JSON; only the prompt goes to Qwen."""
     rw = cfg["rewriter"]
     provider = rw.get("provider", "local")
     if provider not in ("gemini", "openai"):
         raise ValueError("图片的提示词改写要用 Gemini 或 OpenAI 端点（本地 9B 是视频专用的改写模型）")
-    spec = Path(cfg["image"]["ph3"]["spec"] if ph3_mode(cfg) else cfg["image"]["spec_edit" if refs else "spec_t2i"]
-                ).read_text(encoding="utf-8")
+    if h3_image:
+        spec = (
+            "Write a ready-to-use MiniMax-H3-Image prompt in the user's language. "
+            "Preserve explicit requirements and any text meant to appear in the image. "
+            "For text-to-image, develop vague ideas with concrete subjects, composition, materials and light. "
+            "For reference-based requests, describe the intended final image, distinguishing what changes "
+            "from what stays the same. Keep local edits local. Treat the first reference as the edit base "
+            "unless the user specifies a different role. Introduce each supplied <Picture N> exactly by "
+            "its given label in ascending order before describing their roles. Do not invent references."
+        )
+    else:
+        spec = Path(cfg["image"]["ph3"]["spec"] if ph3_mode(cfg) else cfg["image"]["spec_edit" if refs else "spec_t2i"
+                    ]).read_text(encoding="utf-8")
     system = spec + "\n\nReturn only the final rewritten prompt, nothing else."
     parts = [("text", f"User input: {tagged}\nNumber of input images: {len(refs)}")]
     for i, item in enumerate(refs, 1):
         with Image.open(media_path(item)) as im:
             im = ImageOps.exif_transpose(im).convert("RGB")
             im.thumbnail((int(rw["image_side"]),) * 2)  # keep its real shape: the spec reads the ratio off it
-            parts += [("text", f"<Picture {i}>:" if ph3_mode(cfg) else f"<image{i}>:"), ("image", im)]
+            parts += [("text", f"<Picture {i}>:" if h3_image or ph3_mode(cfg) else f"<image{i}>:"), ("image", im)]
     out = (rewrite_gemini(rw["gemini"], rw, system, parts) if provider == "gemini"
            else rewrite_openai(rw["openai"], rw, system, parts))
     out = re.sub(r"^```\w*\n|\n```$", "", out.strip())
@@ -2065,12 +2076,24 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(test_rewriter(cfg, self.body_json()))
             if url.path == "/api/rewrite":
                 b = self.body_json()
-                if b.get("mode") == "h3_image":
-                    raise ValueError("H3-Image 使用原始提示词")
-                if b.get("mode") == "image":
+                if b.get("mode") in ("image", "h3_image"):
                     t0 = time.time()
-                    tagged, refs = image_refs(cfg, b, b.get("prompt", ""))
-                    return self.send_json({"prompt": rewrite_image_prompt(cfg, tagged, refs), "task": "Edit" if refs else "T2I",
+                    h3_image = b["mode"] == "h3_image"
+                    prompt = b.get("prompt", "")
+                    if h3_image and not prompt.strip():
+                        raise ValueError("请先写一句你想画什么")
+                    tagged, refs = image_refs(cfg, b, prompt, h3_image=h3_image)
+                    draft = rewrite_image_prompt(cfg, tagged, refs, h3_image=h3_image)
+                    if h3_image:
+                        if not draft.strip():
+                            raise ValueError("AI 没有返回提示词，请重试")
+                        labels = re.compile(r"<Picture\s+(\d+)>", re.IGNORECASE)
+                        used = list(dict.fromkeys(int(n) for n in labels.findall(draft)))
+                        if used != list(range(1, len(refs) + 1)) or MENTION_RE.search(draft):
+                            raise ValueError("AI 草稿的参考图标记有误，请重试")
+                        tray_positions = {item["id"]: i for i, item in enumerate(b.get("tray", []), 1)}
+                        draft = labels.sub(lambda m: f"@图片{tray_positions[refs[int(m[1]) - 1]['id']]}", draft)
+                    return self.send_json({"prompt": draft, "task": "Edit" if refs else "T2I",
                                            "seconds_used": round(time.time() - t0, 1)})
                 return self.send_json(rewrite(cfg, b))
             if url.path == "/api/generate":

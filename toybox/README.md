@@ -80,5 +80,5 @@ Colab 第 ③ 格默认开启 `SAVE_TO_DRIVE`，数据保存在 `MyDrive/H3Toybo
 
 ## Colab
 
-打开仓库根目录的 `minimax_h3_image_colab.ipynb`，按 [Colab 运行说明](../README.md#在-colab-运行) 选择 GPU 并全部运行。① 安装 → ② 下载权重 → ③ 启动并用 Colab 内置代理打开网页。
+打开仓库根目录的 `minimax_h3_image_colab.ipynb`，按 [Colab 运行说明](../README.md#在-colab-运行) 选择 GPU 并全部运行。第 ③ 格启动服务后，Toybox 会显示在该单元的输出区。第 ③-b 格可用 Cloudflare 打开独立网页。
 Colab 版的 `config.json` 由 ③ 写入（`free_after_rewrite: true`：改写完就卸载 9B 模型，避免和 H3 模型同时占内存）。

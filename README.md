@@ -12,7 +12,7 @@
 ## 在 Colab 运行
 
 1. 用上方的按钮打开 `minimax_h3_image_colab.ipynb`。
-2. 选择 L4 24 GB 或 A100 40/80 GB，再点「运行时 → 全部运行」。首次使用 Google Drive 时按提示授权，然后打开第 ③ 格的 Toybox 链接。
+2. 选择 L4 24 GB 或 A100 40/80 GB，再点「运行时 → 全部运行」。首次使用 Google Drive 时按提示授权，然后在第 ③ 格的输出区操作 Toybox。内嵌页面无法加载时可运行备用的 ③-b。
 
 第 ② 格的 `INSTALL_H3_IMAGE` 默认开启。它从 [Comfy-Org/MiniMax-H3-Image](https://huggingface.co/Comfy-Org/MiniMax-H3-Image/tree/main) 下载 INT8 扩散权重和 FP16 图片 VAE（约 **22.15 GB**），放到 `ComfyUI/models/diffusion_models/` 和 `ComfyUI/models/vae/`。视频与 H3-Image 共用 `text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors`。已有完整文件会跳过，勾选 `USE_DRIVE_CACHE` 可沿用 `MyDrive/H3_models`。默认全选约需 83.20 GB 权重空间，下载单元会按实际文件检查剩余磁盘。
 

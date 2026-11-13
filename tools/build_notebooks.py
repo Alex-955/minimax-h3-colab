@@ -316,13 +316,13 @@ TOYBOX = [
 
 把想象丢进玩具箱，摇一摇就变成视频 🧸 ComfyUI 只在背景当引擎，**不用开 ComfyUI 界面**，所有操作都在 H3 Toybox 网页里。
 
-运行环境选 **L4 24 GB** 或 **A100 40/80 GB**。选择「运行时 → 全部运行」，再打开第 ③ 格的 Toybox 链接。
+运行环境选 **L4 24 GB** 或 **A100 40/80 GB**。选择「运行时 → 全部运行」，在第 ③ 格的输出区操作 Toybox。
 
 | 步骤 | 做什么 |
 |---|---|
 | ① 检查并安装 | 更新 ComfyUI 主分支、安装依赖与视频节点，从 GitHub 拉取 Toybox |
 | ② 下载模型 | 视频约 50 GB，P-H3-Image 另加约 10 GB，H3-Image 另加约 22.15 GB。下载前按所选模型检查磁盘 |
-| ③ 启动＋开网页 | 背景启动 ComfyUI 与 H3 Toybox，用 Colab 内置代理开网页；作品默认存到Google Drive「H3Toybox」文件夹 |
+| ③ 启动并显示网页 | 后台启动 ComfyUI 和 H3 Toybox，在本单元下方内嵌网页；作品默认存到 Google Drive 的「H3Toybox」文件夹 |
 | ③-b | 备用 Cloudflare 链接，默认关闭，可按需手动开启 |
 
 **网页里能做的事**
@@ -517,9 +517,8 @@ for g in ('VIDEO_PROMPT_WRITING_GUIDE_ref_en.md', 'VIDEO_PROMPT_WRITING_GUIDE_ba
     shutil.copy(str(got), str(GUIDES / g))
 print(f'✅ 下载完成，{(time.time() - t0) / 60:.1f} 分钟')
 """),
-    code("""#@title ③ 启动 ComfyUI 和 H3 Toybox，打开网页
-# 运行后下面会出现一个链接；显示成 localhost 也没关系，直接点它就会开新标签页。
-# ⚠️ 打开标签页的浏览器必须登录「跟这本 Colab 同一个 Google 账号」；账号不同就改用下一格 ③-b。
+    code("""#@title ③ 启动 ComfyUI 和 H3 Toybox，在下方显示网页
+# 在本单元的输出区操作 Toybox。若内嵌页面无法加载，可使用第 ③-b 格。
 #@markdown **作品存到Google Drive**：素材库、文件夹、生成的视频、生成纪录都放在「我的Google Drive/H3Toybox」，
 #@markdown 断线或不小心关掉运行阶段，重开后再跑一次 ①②③ 东西都还在。第一次会跳出授权窗口，按同意即可。
 SAVE_TO_DRIVE = True  #@param {type:"boolean"}
@@ -606,13 +605,13 @@ toybox = subprocess.Popen([sys.executable, 'server.py'], cwd=str(APP),
 wait_http('http://127.0.0.1:8190/api/config', 'H3 Toybox', '/content/toybox.log', tries=30)
 print('📁 作品存放位置：', DATA)
 from google.colab import output
-output.serve_kernel_port_as_window(8190, anchor_text='🧸 打开 H3 Toybox')
+output.serve_kernel_port_as_iframe(8190, height='900')
 """),
     code("""#@title ③-b（备用）通过 Cloudflare 打开 H3 Toybox
 # ⚠️ 网址没有密码，拿到的人都能用你的 GPU —— 不要贴到公开的地方。
 ENABLE_TUNNEL = False  #@param {type:"boolean"}
 if not ENABLE_TUNNEL:
-    print('Cloudflare 通道未开启。请使用第 ③ 格的 Colab 网页链接。')
+    print('Cloudflare 通道未开启。请在第 ③ 格的输出区使用 Toybox。')
 else:
 """ + "\n".join("    " + line for line in """import subprocess, re, time
 if not Path('/content/cloudflared').exists():
